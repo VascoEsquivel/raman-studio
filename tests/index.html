@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Raman Studio — tests</title>
+<link rel="icon" href="data:,">
+<style>
+  :root { color-scheme: light dark; --ok: #1f9d55; --bad: #d64545; --muted: #888; }
+  body { font: 13px/1.45 ui-monospace, Consolas, monospace; margin: 24px; }
+  h1 { font-size: 16px; margin: 0 0 4px; }
+  #sum { margin: 0 0 16px; font-weight: 700; }
+  .r { padding: 2px 0; }
+  .ok::before { content: "✓ "; color: var(--ok); }
+  .bad::before { content: "✗ "; color: var(--bad); }
+  .bad { color: var(--bad); }
+  .file { color: var(--muted); }
+  pre { white-space: pre-wrap; margin: 2px 0 8px 18px; color: var(--bad); font-size: 12px; }
+</style>
+</head>
+<body>
+<h1>Raman Studio — unit tests</h1>
+<div id="sum">running…</div>
+<div id="out"></div>
+<script type="module">
+  import { SUITES } from './suites.js';
+  import { setCurrentFile, test, runAll } from './harness.js';
+
+  // ?only=io,process  → run suites whose filename starts with one of the prefixes
+  const only = new URLSearchParams(location.search).get('only');
+  const prefixes = only ? only.split(',').map(s => s.trim()).filter(Boolean) : null;
+  const chosen = prefixes ? SUITES.filter(f => prefixes.some(p => f.startsWith(p))) : SUITES;
+
+  for (const file of chosen) {
+    setCurrentFile(file);
+    try {
+      await import('./' + file);
+    } catch (err) {
+      const msg = String(err && (err.stack || err.message) || err);
+      test('suite loads', () => { throw new Error('could not load ' + file + ': ' + msg); });
+    }
+  }
+
+  const out = document.getElementById('out');
+  const esc = s => String(s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+  const summary = await runAll(r => {
+    const d = document.createElement('div');
+    d.className = 'r ' + (r.ok ? 'ok' : 'bad');
+    d.innerHTML = `<span class="file">${esc(r.file)}</span> ${esc(r.name)} <span class="file">${r.ms.toFixed(0)} ms</span>` +
+      (r.ok ? '' : `<pre>${esc(r.error)}</pre>`);
+    out.appendChild(d);
+  });
+  document.getElementById('sum').textContent =
+    `${summary.passed}/${summary.total} passed` + (summary.failed ? ` — ${summary.failed} FAILED` : '');
+  document.getElementById('sum').style.color = summary.failed ? 'var(--bad)' : 'var(--ok)';
+  window.__TEST_RESULTS__ = summary;
+</script>
+</body>
+</html>

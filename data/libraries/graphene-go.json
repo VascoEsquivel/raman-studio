@@ -1,0 +1,704 @@
+{
+  "schema": "raman-studio/band-library@1",
+  "id": "graphene-go",
+  "name": "Graphene & graphene oxide — nine-band model",
+  "material": "Graphene / graphene oxide (GO, rGO)",
+  "source": {
+    "title": "Raman Spectroscopy of Graphene &amp; Graphene Oxide",
+    "url": "https://vascoesquivel.github.io/raman-graphene-atlas/",
+    "repo": "https://github.com/VascoEsquivel/raman-graphene-atlas",
+    "commit": "459f1a3cac0724c84b7c54c27c14e601c28187fa",
+    "file": "index.html",
+    "extractedWith": "tools/extract_atlas.py",
+    "note": "Atlas fields are verbatim copies of the PEAKS, RATIOS, CHEAT and REFS constants. Blocks named match / fit / matchDefaults / fitDefaults / referenceExcitation / ratioMap are app data derived from or added to the atlas, and say so."
+  },
+  "referenceExcitation": {
+    "nm": 532,
+    "status": "assumed",
+    "note": "The atlas does not state an excitation wavelength for its positions. 532 nm was chosen by the atlas author (2026-10-02) as the reference for dispersion-shifting match windows. App setting, not atlas data."
+  },
+  "matchDefaults": {
+    "toleranceCm": 25,
+    "unknownDispersionAllowanceCmPerEV": 50,
+    "note": "App settings, not atlas data. A peak matches a band if it lies within the band's atlas range ± toleranceCm (after dispersion shift). Bands with dispersion.widenWindow get an extra ± allowance × |ΔE| because the atlas gives no rate for them; 50 cm⁻¹/eV is the atlas D-band rate, used as a generous envelope."
+  },
+  "fitDefaults": {
+    "fwhmMin": 6,
+    "fwhmMax": 300,
+    "gaussianPercentSeed": 50,
+    "windowPadCm": 100,
+    "note": "App settings, not atlas data: bounds for the deconvolution fitter. Centres are bounded to each band's match window so bands cannot swap places."
+  },
+  "atlasNotes": {
+    "title": "Raman Spectroscopy of Graphene &amp; Graphene Oxide",
+    "subtitle": "An interactive atlas of the nine-band deconvolution model. Click any peak in the spectrum or a tab below to explore its vibrational origin, the physics it encodes, and how to use it diagnostically — cross-checked against the primary literature.",
+    "banner": "This atlas uses the graphene-oxide 9-band deconvolution. The second-order <b>G* (D+D″)</b> band is placed at its correct <b>~2450 cm⁻¹</b> position (matching your measured data); the ~2850–2920 cm⁻¹ region is sp³ C–H stretching, not a lattice phonon band. Corrected / updated items carry a red note and references.",
+    "referencesNote": "Citation counts (badges) are from <b>Semantic Scholar</b>, retrieved Jul 2026 — Google Scholar figures are typically higher. Every source is well cited; the foundational reviews exceed several thousand citations, confirming reputability. Green badges mark ≥2,000 citations.",
+    "footer": "Built for reference use. Peak positions are representative and shift with excitation wavelength, strain, doping, layer number and oxidation degree — always calibrate against a known standard.<br>\n    Sources are hyperlinked above; <span style=\"color:var(--warn)\">■</span> marks references added during the accuracy review."
+  },
+  "bands": [
+    {
+      "id": "Dstar",
+      "label": "D*",
+      "name": "D* band (Sadezky D4)",
+      "region": "first",
+      "order": "First-order",
+      "activated": "Disorder / sp³",
+      "sym": "—",
+      "posText": "~1150–1200 cm⁻¹",
+      "posSort": 1180,
+      "plot": {
+        "mu": 1180,
+        "A": 0.13,
+        "sig": 42
+      },
+      "origin": "sp³ / C–H bending / polyene-like chains",
+      "use": "sp³ functionalisation &amp; C–H/C–O edge groups",
+      "process": "Not a graphene double-resonance mode. Attributed to the disordered sp³-rich phase and the phonon density of states of finite/defective domains.",
+      "mechanism": "C–H in-plane bending, vibrations of short aliphatic / polyene-like (trans-polyacetylene-type) chains, and sp³-rich carbon adjacent to oxygen functional groups. In Sadezky's five-band scheme for disordered carbon this is the <b>D4</b> component.",
+      "meaning": "A direct marker of <b>sp³ functionalisation</b> and edge C–H / C–O bonding. Grows with oxidation and shrinks during chemical/thermal reduction as the sp² network is restored. Frequently too weak to fit reliably in well-ordered or lightly oxidised GO.",
+      "diagnostics": "Presence/area tracks oxidation degree. Its disappearance is one signature of successful reduction toward rGO.",
+      "refs": [
+        "claramunt15",
+        "sadezky05",
+        "lopez20",
+        "fr2000"
+      ],
+      "match": {
+        "range": [
+          1150,
+          1200
+        ],
+        "rangeSource": "atlas posText: ~1150–1200 cm⁻¹",
+        "center": 1180,
+        "centerSource": "atlas posSort",
+        "dispersion": {
+          "cmPerEV": 0,
+          "stated": false,
+          "source": "not a double-resonance band in the atlas; treated as non-dispersive"
+        }
+      },
+      "fit": {
+        "fwhmSeed": 98.9,
+        "source": "atlas plot.sig × 2.3548 — the atlas's schematic curve width, used only as a starting value for deconvolution (the atlas gives no measured FWHM)"
+      }
+    },
+    {
+      "id": "D",
+      "label": "D",
+      "name": "D band (disorder / defect)",
+      "region": "first",
+      "order": "First-order",
+      "activated": "Defect-activated",
+      "sym": "A₁g breathing",
+      "posText": "~1350 cm⁻¹",
+      "posSort": 1350,
+      "plot": {
+        "mu": 1350,
+        "A": 0.9,
+        "sig": 46
+      },
+      "origin": "A₁g ring-breathing (1 iTO phonon, intervalley)",
+      "use": "Defect density; crystallite size Lₐ / inter-defect distance L_D",
+      "process": "<b>Intervalley double resonance</b> (K↔K′): one in-plane transverse-optical (iTO) phonon near the K point plus one elastic scattering event off a defect. Strongly dispersive (~50 cm⁻¹ per eV of laser energy).",
+      "mechanism": "Symmetric <b>A₁g breathing mode</b> of the six-membered aromatic rings. Because it needs a defect (or edge) to conserve momentum, it is <b>forbidden in pristine, infinite single-layer graphene</b>.",
+      "meaning": "The workhorse defect probe. I<sub>D</sub>/I<sub>G</sub> quantifies defect density and crystallite size — but only once you know which regime you are in (see the ratio guide: low-defect Tuinstra–Koenig vs. high-defect amorphisation).",
+      "diagnostics": "Lₐ (nm) = (560/E<sub>l</sub>⁴)·(I<sub>D</sub>/I<sub>G</sub>)⁻¹ in the low-defect regime (E<sub>l</sub> in eV; Cançado 2011). Also yields inter-defect distance L_D.",
+      "refs": [
+        "ferraribasko13",
+        "tk70",
+        "cancado11",
+        "malard09",
+        "claramunt15"
+      ],
+      "match": {
+        "range": [
+          1350,
+          1350
+        ],
+        "rangeSource": "atlas posText: ~1350 cm⁻¹",
+        "center": 1350,
+        "centerSource": "atlas posSort",
+        "dispersion": {
+          "cmPerEV": 50,
+          "stated": true,
+          "source": "atlas D.process: \"Strongly dispersive (~50 cm⁻¹ per eV of laser energy)\""
+        }
+      },
+      "fit": {
+        "fwhmSeed": 108.32,
+        "source": "atlas plot.sig × 2.3548 — the atlas's schematic curve width, used only as a starting value for deconvolution (the atlas gives no measured FWHM)"
+      }
+    },
+    {
+      "id": "Dpp",
+      "label": "D″",
+      "name": "D″ band (Sadezky D3)",
+      "region": "first",
+      "order": "First-order",
+      "activated": "Disorder / amorphous",
+      "sym": "—",
+      "posText": "~1500–1550 cm⁻¹",
+      "posSort": 1520,
+      "plot": {
+        "mu": 1520,
+        "A": 0.2,
+        "sig": 52
+      },
+      "origin": "Amorphous sp² phase / oxygen linkages",
+      "use": "Amorphous-carbon fraction &amp; functionalisation",
+      "process": "Broad feature between D and G, fit as the <b>D3</b> component of disordered carbon.",
+      "mechanism": "Amorphous sp² carbon and interstitial lattice defects, plus out-of-plane vibrations of oxygen functional groups (epoxy C–O–C, hydroxyl C–OH). Reflects lattice distortion by oxygen intercalants.",
+      "meaning": "Its intensity/width scales with the <b>amorphous fraction</b>; it decreases and narrows during thermal annealing as the lattice recrystallises.",
+      "diagnostics": "Useful for staging oxidation/reduction. Often small (undetectable) in well-crystalline flakes.",
+      "correction": "The label <b>D″ is overloaded</b>. Here it denotes the ~1500 cm⁻¹ amorphous band (Sadezky D3). In mainstream graphene physics, <b>D″ instead denotes a ~1100 cm⁻¹ phonon on the LA branch</b> — the one that produces the ~2450 cm⁻¹ combination band (see the D+D″ tab). Keep the two meanings distinct when comparing papers.",
+      "refs": [
+        "claramunt15",
+        "sadezky05",
+        "lopez20",
+        "malard09"
+      ],
+      "match": {
+        "range": [
+          1500,
+          1550
+        ],
+        "rangeSource": "atlas posText: ~1500–1550 cm⁻¹",
+        "center": 1520,
+        "centerSource": "atlas posSort",
+        "dispersion": {
+          "cmPerEV": 0,
+          "stated": false,
+          "source": "not a double-resonance band in the atlas; treated as non-dispersive"
+        }
+      },
+      "fit": {
+        "fwhmSeed": 122.45,
+        "source": "atlas plot.sig × 2.3548 — the atlas's schematic curve width, used only as a starting value for deconvolution (the atlas gives no measured FWHM)"
+      }
+    },
+    {
+      "id": "G",
+      "label": "G",
+      "name": "G band (graphitic E₂g)",
+      "region": "first",
+      "order": "First-order",
+      "activated": "Raman-allowed",
+      "sym": "E₂g at Γ",
+      "posText": "~1580–1600 cm⁻¹",
+      "posSort": 1585,
+      "plot": {
+        "mu": 1585,
+        "A": 0.85,
+        "sig": 30
+      },
+      "origin": "E₂g in-plane C–C stretch at Γ",
+      "use": "Baseline mode; oxidation / doping / strain gauge",
+      "process": "First-order, <b>Raman-allowed at the Brillouin-zone centre (Γ)</b>. No defect required — active in every sp² carbon material.",
+      "mechanism": "In-plane bond-stretching of sp² C–C atom pairs (the degenerate LO/iTO optical mode of <b>E₂g</b> symmetry at Γ). The fundamental reference peak of the spectrum.",
+      "meaning": "Blue-shifts (stiffens) upon oxidation as sp² domains become isolated, and is sensitive to <b>charge doping</b> (via removal of the Kohn anomaly) and <b>strain</b> (splits into G⁺/G⁻ under uniaxial strain). In GO the apparent G maximum often sits at 1590–1600 cm⁻¹ because it overlaps D′.",
+      "diagnostics": "Position + FWHM report doping and strain; pairing ω(G) with ω(2D) separates the two.",
+      "refs": [
+        "ferraribasko13",
+        "malard09",
+        "cancado11",
+        "leeryu12"
+      ],
+      "match": {
+        "range": [
+          1580,
+          1600
+        ],
+        "rangeSource": "atlas posText: ~1580–1600 cm⁻¹",
+        "center": 1585,
+        "centerSource": "atlas posSort",
+        "dispersion": {
+          "cmPerEV": 0,
+          "stated": false,
+          "source": "not a double-resonance band in the atlas; treated as non-dispersive"
+        }
+      },
+      "fit": {
+        "fwhmSeed": 70.64,
+        "source": "atlas plot.sig × 2.3548 — the atlas's schematic curve width, used only as a starting value for deconvolution (the atlas gives no measured FWHM)"
+      }
+    },
+    {
+      "id": "Dp",
+      "label": "D′",
+      "name": "D′ band (D-prime)",
+      "region": "first",
+      "order": "First-order",
+      "activated": "Defect-activated",
+      "sym": "—",
+      "posText": "~1620 cm⁻¹",
+      "posSort": 1620,
+      "plot": {
+        "mu": 1620,
+        "A": 0.24,
+        "sig": 18
+      },
+      "origin": "1 iLO phonon, intravalley DR",
+      "use": "Defect TYPE via I_D/I_D′",
+      "process": "<b>Intravalley double resonance</b>: one in-plane longitudinal-optical (iLO) phonon plus a defect, connecting two points within the <b>same</b> Dirac cone around K. Appears as a shoulder on the high-frequency side of G.",
+      "mechanism": "Defect-activated companion to the D band. Because D (intervalley) and D′ (intravalley) probe different scattering geometries, their <b>ratio</b> encodes the physical nature of the defect.",
+      "meaning": "I<sub>D</sub>/I<sub>D′</sub> classifies the dominant defect type (Eckmann 2012): <span class='mono'>≈13</span> sp³ defects, <span class='mono'>≈7</span> vacancies, <span class='mono'>≈3.5</span> boundaries/edges.",
+      "diagnostics": "The single most useful ratio for distinguishing chemical (sp³) from structural (vacancy/edge) disorder.",
+      "refs": [
+        "eckmann12",
+        "ferraribasko13",
+        "malard09"
+      ],
+      "match": {
+        "range": [
+          1620,
+          1620
+        ],
+        "rangeSource": "atlas posText: ~1620 cm⁻¹",
+        "center": 1620,
+        "centerSource": "atlas posSort",
+        "dispersion": {
+          "cmPerEV": null,
+          "stated": false,
+          "widenWindow": true,
+          "source": "Intravalley double resonance (atlas D′ process); the atlas gives no dispersion rate.",
+          "todo": "Rate not in atlas. Window is widened instead of shifted (see matchDefaults.unknownDispersionAllowanceCmPerEV)."
+        }
+      },
+      "fit": {
+        "fwhmSeed": 42.39,
+        "source": "atlas plot.sig × 2.3548 — the atlas's schematic curve width, used only as a starting value for deconvolution (the atlas gives no measured FWHM)"
+      }
+    },
+    {
+      "id": "twoD",
+      "label": "2D",
+      "name": "2D band (G′)",
+      "region": "second",
+      "order": "Second-order",
+      "activated": "Defect-INDEPENDENT",
+      "sym": "2× iTO",
+      "posText": "~2680–2700 cm⁻¹",
+      "posSort": 2690,
+      "plot": {
+        "mu": 2690,
+        "A": 0.32,
+        "sig": 58
+      },
+      "origin": "Two iTO phonons (q,−q), intervalley",
+      "use": "Layer number &amp; monolayer quality",
+      "process": "<b>Two-phonon intervalley double resonance</b>: two iTO phonons of opposite momentum (q and −q). It is the overtone of the D-band phonon, but the two phonons conserve momentum by themselves — so <b>no defect is needed</b>. Highly dispersive (~100 cm⁻¹/eV).",
+      "mechanism": "Because its intensity does not require disorder, the 2D band survives in pristine graphene where D is absent.",
+      "meaning": "In pristine <b>single-layer</b> graphene it is a single sharp Lorentzian (FWHM ≈ 24–30 cm⁻¹) with I<sub>2D</sub>/I<sub>G</sub> ≈ 2 (up to ~4 for suspended flakes). It splits into four components in AB-stacked bilayers and broadens with layer number. Re-emergence during GO reduction signals restored electronic conjugation.",
+      "diagnostics": "Lineshape + I<sub>2D</sub>/I<sub>G</sub> is the standard monolayer fingerprint; position also shifts with strain and doping.",
+      "refs": [
+        "ferrari06",
+        "ferraribasko13",
+        "malard09"
+      ],
+      "match": {
+        "range": [
+          2680,
+          2700
+        ],
+        "rangeSource": "atlas posText: ~2680–2700 cm⁻¹",
+        "center": 2690,
+        "centerSource": "atlas posSort",
+        "dispersion": {
+          "cmPerEV": 100,
+          "stated": true,
+          "source": "atlas twoD.process: \"Highly dispersive (~100 cm⁻¹/eV)\""
+        }
+      },
+      "fit": {
+        "fwhmSeed": 136.58,
+        "source": "atlas plot.sig × 2.3548 — the atlas's schematic curve width, used only as a starting value for deconvolution (the atlas gives no measured FWHM)"
+      }
+    },
+    {
+      "id": "DDpp",
+      "label": "G*",
+      "name": "G* band (D+D″ / iTO+LA)",
+      "region": "second",
+      "order": "Second-order",
+      "activated": "Weak, disorder-related",
+      "sym": "iTO + LA combination",
+      "posText": "~2450 cm⁻¹",
+      "posSort": 2450,
+      "plot": {
+        "mu": 2450,
+        "A": 0.12,
+        "sig": 45
+      },
+      "origin": "iTO + LA intervalley combination",
+      "use": "Weak lattice fingerprint; graphitic-order check",
+      "process": "Second-order <b>intervalley combination</b> of one in-plane transverse-optical (iTO / D-band) phonon and one longitudinal-acoustic (LA) phonon near the K point. Weak and only mildly dispersive.",
+      "mechanism": "A genuine graphene-lattice combination mode, also written <b>D+D″</b> — where here “D″” means the ~1100 cm⁻¹ LA-branch phonon, <i>not</i> the ~1500 cm⁻¹ amorphous band. It is distinct from the ~2850–2920 cm⁻¹ window, which in oxidised GO is dominated by sp³ C–H stretching.",
+      "meaning": "A weak second-order feature centred near <b>2450 cm⁻¹</b>. Your fits (2450–2550) and measured ~2459 sit right in range; the exact position is mildly excitation-dependent, so small left/right shifts are expected. Mainly a confirmation of an intact graphitic lattice.",
+      "diagnostics": "Presence confirms graphitic ordering; fit with a single Lorentzian and don’t over-interpret small shifts.",
+      "correction": "<b>Fixed in this version.</b> Earlier this atlas placed “D+D″” at ~2850–2900 cm⁻¹. The correct band — the one your data labels <b>G*</b> — is here at <b>~2450 cm⁻¹</b> (iTO+LA). The ~2850–2920 cm⁻¹ region is sp³ C–H stretching, not a phonon combination, so it is not a separate lattice band.",
+      "refs": [
+        "malard09",
+        "ferraribasko13",
+        "claramunt15",
+        "lopez20"
+      ],
+      "match": {
+        "range": [
+          2450,
+          2450
+        ],
+        "rangeSource": "atlas posText: ~2450 cm⁻¹",
+        "center": 2450,
+        "centerSource": "atlas posSort",
+        "dispersion": {
+          "cmPerEV": null,
+          "stated": false,
+          "widenWindow": true,
+          "source": "Atlas: \"Weak and only mildly dispersive\" — no numeric rate given.",
+          "todo": "Rate not in atlas. Window is widened instead of shifted (see matchDefaults.unknownDispersionAllowanceCmPerEV)."
+        }
+      },
+      "fit": {
+        "fwhmSeed": 105.97,
+        "source": "atlas plot.sig × 2.3548 — the atlas's schematic curve width, used only as a starting value for deconvolution (the atlas gives no measured FWHM)"
+      }
+    },
+    {
+      "id": "DDp",
+      "label": "D+D′",
+      "name": "D+D′ combination band",
+      "region": "second",
+      "order": "Second-order",
+      "activated": "Defect-activated",
+      "sym": "combination",
+      "posText": "~2930–2950 cm⁻¹",
+      "posSort": 2935,
+      "plot": {
+        "mu": 2935,
+        "A": 0.19,
+        "sig": 60
+      },
+      "origin": "D (intervalley) + D′ (intravalley)",
+      "use": "Overall disorder; sp² recovery on reduction",
+      "process": "Disorder-activated <b>combination</b> of one D phonon (intervalley iTO) and one D′ phonon (intravalley iLO). Requires defects for momentum conservation.",
+      "mechanism": "Because it mixes the two defect channels, it is a robust overall measure of structural + chemical disorder.",
+      "meaning": "Its peak position correlates linearly with the % of sp² carbon recovered during GO reduction — one of the three correlations López-Díaz use to quantify oxidation degree.",
+      "diagnostics": "Position/area vs. sp² fraction; a practical reduction-progress meter.",
+      "correction": "Historically this band was mislabelled <b>“D+G”</b> (1350+1580 ≈ 2930). The correct assignment is <b>D+D′</b> — the G phonon is Raman-allowed at Γ and does not participate in this double-resonance combination.",
+      "refs": [
+        "ferraribasko13",
+        "malard09",
+        "lopez20",
+        "claramunt15"
+      ],
+      "match": {
+        "range": [
+          2930,
+          2950
+        ],
+        "rangeSource": "atlas posText: ~2930–2950 cm⁻¹",
+        "center": 2935,
+        "centerSource": "atlas posSort",
+        "dispersion": {
+          "cmPerEV": null,
+          "stated": false,
+          "widenWindow": true,
+          "source": "D+D′ combination (atlas); the atlas gives no dispersion rate.",
+          "todo": "Rate not in atlas. Window is widened instead of shifted (see matchDefaults.unknownDispersionAllowanceCmPerEV)."
+        }
+      },
+      "fit": {
+        "fwhmSeed": 141.29,
+        "source": "atlas plot.sig × 2.3548 — the atlas's schematic curve width, used only as a starting value for deconvolution (the atlas gives no measured FWHM)"
+      }
+    },
+    {
+      "id": "twoDp",
+      "label": "2D′",
+      "name": "2D′ band (overtone of D′)",
+      "region": "second",
+      "order": "Second-order",
+      "activated": "Defect-INDEPENDENT",
+      "sym": "2× iLO",
+      "posText": "~3220–3245 cm⁻¹",
+      "posSort": 3230,
+      "plot": {
+        "mu": 3230,
+        "A": 0.11,
+        "sig": 46
+      },
+      "origin": "Two iLO phonons, intravalley",
+      "use": "Auxiliary strain probe",
+      "process": "Second-order <b>overtone of D′</b>: two intravalley iLO phonons. Like 2D, it needs no defect.",
+      "mechanism": "The intravalley counterpart of the 2D band, sitting at the high-frequency end of the spectrum.",
+      "meaning": "Responds to mechanical strain and is <b>less sensitive to charge doping than G or 2D</b>, which is why it has been proposed as an auxiliary gauge for strain assessment.",
+      "diagnostics": "Helpful as a cross-check when separating strain from doping — but combine with the ω(2D)–ω(G) correlation for a full separation.",
+      "correction": "<b>Overstated in the source.</b> 2D′ is <b>not</b> a “pure strain gauge free of doping.” Electrochemical-doping studies show its position/intensity do shift with carrier density; strain and charge effects remain coupled. It is <i>less</i> doping-sensitive than G/2D — useful, but not doping-independent (Del Corro 2015; Lee &amp; Ryu 2012).",
+      "refs": [
+        "strain2d15",
+        "leeryu12",
+        "ferraribasko13"
+      ],
+      "match": {
+        "range": [
+          3220,
+          3245
+        ],
+        "rangeSource": "atlas posText: ~3220–3245 cm⁻¹",
+        "center": 3230,
+        "centerSource": "atlas posSort",
+        "dispersion": {
+          "cmPerEV": null,
+          "stated": false,
+          "widenWindow": true,
+          "source": "Overtone of D′ (atlas); the atlas gives no dispersion rate.",
+          "todo": "Rate not in atlas. Window is widened instead of shifted (see matchDefaults.unknownDispersionAllowanceCmPerEV)."
+        }
+      },
+      "fit": {
+        "fwhmSeed": 108.32,
+        "source": "atlas plot.sig × 2.3548 — the atlas's schematic curve width, used only as a starting value for deconvolution (the atlas gives no measured FWHM)"
+      }
+    }
+  ],
+  "regions": [
+    {
+      "id": "CH-stretch",
+      "label": "sp³ C–H",
+      "name": "sp³ C–H stretching region",
+      "range": [
+        2850,
+        2920
+      ],
+      "kind": "non-lattice",
+      "text": "the ~2850–2920 cm⁻¹ region is sp³ C–H stretching, not a lattice phonon band",
+      "source": "atlas header banner (also the G* correction and workflow step 8)"
+    }
+  ],
+  "ratios": [
+    {
+      "n": "I_D / I_G",
+      "t": "Defect density &amp; crystallite size",
+      "b": "The most-used ratio — but it is <b>two-valued</b>, so you must know the regime:",
+      "eqs": [
+        "Low-defect (Tuinstra–Koenig): Lₐ ∝ (I_D/I_G)⁻¹",
+        "Cançado 2011: Lₐ[nm] = (560 / E_l⁴) · (I_D/I_G)⁻¹   (E_l in eV)",
+        "High-defect (amorphisation, Ferrari–Robertson): I_D/I_G ∝ Lₐ²"
+      ],
+      "note": "The ratio rises as defects increase, <b>peaks near Lₐ ≈ 3–4 nm, then falls</b>. A given I_D/I_G value maps to two crystallite sizes — disambiguate with G-band width (broad G ⇒ amorphisation regime).",
+      "refs": [
+        "tk70",
+        "cancado11",
+        "fr2000"
+      ]
+    },
+    {
+      "n": "I_D / I_D′",
+      "t": "Defect TYPE",
+      "b": "Separates chemical from structural disorder (Eckmann 2012):",
+      "eqs": [
+        "≈ 13  → sp³ defects (covalent O/H bonding)",
+        "≈ 7   → vacancy-type defects",
+        "≈ 3.5 → boundary / edge defects"
+      ],
+      "note": "Nearly excitation-independent, which makes it more robust than I_D/I_G for identifying <i>what kind</i> of defect dominates.",
+      "refs": [
+        "eckmann12"
+      ]
+    },
+    {
+      "n": "I_2D / I_G  +  2D lineshape",
+      "t": "Layer number &amp; quality",
+      "b": "Read intensity ratio and lineshape together:",
+      "eqs": [
+        "Single Lorentzian, FWHM ≈ 24–30 cm⁻¹, I_2D/I_G ≈ 2 → monolayer",
+        "4-component, broader 2D, lower ratio → AB bilayer / few-layer",
+        "Weak/absent 2D + strong D → GO / highly disordered"
+      ],
+      "note": "Suspended high-quality monolayers can reach I_2D/I_G ≈ 4. Substrate doping lowers the ratio, so combine with FWHM.",
+      "refs": [
+        "ferrari06",
+        "ferraribasko13"
+      ]
+    },
+    {
+      "n": "A_D′ / A_G  (integrated)",
+      "t": "sp³ vs. vacancy character",
+      "b": "Integrated-area version used in GO work:",
+      "eqs": [
+        "Compared against ab-initio curves for sp³ vs. vacancy defects",
+        "Position of 2D and of D+D′ → % sp² carbon (López-Díaz correlations)"
+      ],
+      "note": "Three independent correlations (I_D/I_G, ω(2D), ω(D+D′)) should agree — cross-check them and, where possible, against XPS C/O. Related practical metrics: <b>G-band FWHM</b> broadens with structural disorder, and the <b>G/D area ratio</b> scales with inter-defect distance L_D — the two metrics used in your spreadsheet.",
+      "refs": [
+        "lopez20",
+        "claramunt15"
+      ]
+    },
+    {
+      "n": "I(2D) / I(D+D′)",
+      "t": "Sample order vs. oxidation",
+      "b": "An order gauge that explains a common surprise:",
+      "eqs": [
+        "Ordered / graphitic (few defects): 2D strong &amp; sharp → I(2D) &gt; I(D+D′)",
+        "Highly oxidised / disordered GO: 2D weak &amp; broad, combination bands grow → I(D+D′) &gt; I(2D)"
+      ],
+      "note": "2D needs <b>no defect</b> (two-phonon, momentum-conserved), so it collapses as oxidation rises while defect-activated D+D′ grows. If your 2D is stronger than the literature’s, your sample is <b>less oxidised / more graphitic</b> than theirs. Laser wavelength and layer number also shift these ratios.",
+      "refs": [
+        "lopez20",
+        "claramunt15",
+        "ferraribasko13"
+      ]
+    }
+  ],
+  "ratioMap": [
+    {
+      "ratioIndex": 0,
+      "num": "D",
+      "den": "G",
+      "measures": [
+        "height",
+        "area"
+      ],
+      "extras": [
+        "crystalliteSize",
+        "gWidth"
+      ]
+    },
+    {
+      "ratioIndex": 1,
+      "num": "D",
+      "den": "Dp",
+      "measures": [
+        "height",
+        "area"
+      ],
+      "classify": {
+        "values": [
+          13,
+          7,
+          3.5
+        ],
+        "labels": [
+          "sp³ defects",
+          "vacancy-type defects",
+          "boundary / edge defects"
+        ],
+        "source": "atlas ratio card I_D / I_D′ (Eckmann 2012)"
+      }
+    },
+    {
+      "ratioIndex": 2,
+      "num": "twoD",
+      "den": "G",
+      "measures": [
+        "height",
+        "area"
+      ],
+      "extras": [
+        "twoDWidth"
+      ]
+    },
+    {
+      "ratioIndex": 3,
+      "num": "Dp",
+      "den": "G",
+      "measures": [
+        "area"
+      ]
+    },
+    {
+      "ratioIndex": 4,
+      "num": "twoD",
+      "den": "DDp",
+      "measures": [
+        "height",
+        "area"
+      ]
+    }
+  ],
+  "workflow": [
+    "Only G (~1585) + a single sharp 2D (FWHM &lt; 30 cm⁻¹, I_2D/I_G ≥ 2), D absent → <b>pristine single-layer graphene</b>.",
+    "G + a broader, multi-component 2D, still little/no D → <b>few-layer AB-stacked graphene</b> (count components / check ratio).",
+    "Strong D, a D′ shoulder on G, broad bands, D* and D″ present, weak or absent 2D → <b>graphene oxide / highly disordered carbon</b>.",
+    "Compute <b>I_D/I_D′</b> → 13 / 7 / 3.5 tells you sp³ vs. vacancy vs. edge defects.",
+    "Compute <b>I_D/I_G</b>, decide the regime from the G-band width, then apply the Cançado equation for crystallite size Lₐ.",
+    "Track reduction (GO→rGO): D/G evolving, <b>2D re-emerging</b>, D+D′ shifting, and D*/D″ shrinking all indicate increasing sp² content.",
+    "For strain vs. doping: use ω(G) and ω(2D) positions and the ω(2D)-vs-ω(G) correlation; treat 2D′ as an auxiliary (not absolute) strain check.",
+    "Around 2850–2920 cm⁻¹, decide whether you are seeing a phonon combination or <b>sp³ C–H stretching</b> before assigning D+D″ — and remember the canonical D+D″/G* sits near 2450 cm⁻¹."
+  ],
+  "references": {
+    "ferrari06": {
+      "c": "Ferrari, Meyer, Scardaci et al. (2006). Raman Spectrum of Graphene and Graphene Layers. Phys. Rev. Lett. 97, 187401.",
+      "u": "https://doi.org/10.1103/PhysRevLett.97.187401",
+      "cc": "~11,200"
+    },
+    "claramunt15": {
+      "c": "Claramunt, Varea, López-Díaz et al. (2015). The Importance of Interbands on the Interpretation of the Raman Spectrum of Graphene Oxide. J. Phys. Chem. C 119, 10123.",
+      "u": "https://doi.org/10.1021/acs.jpcc.5b01590",
+      "cc": "707"
+    },
+    "lopez20": {
+      "c": "López-Díaz, Delgado-Notario, Clericò et al. (2020). Towards Understanding the Raman Spectrum of Graphene Oxide. Coatings 10, 524.",
+      "u": "https://doi.org/10.3390/coatings10060524",
+      "cc": "114"
+    },
+    "eckmann12": {
+      "c": "Eckmann, Felten, Mishchenko et al. (2012). Probing the Nature of Defects in Graphene by Raman Spectroscopy. Nano Lett. 12, 3925.",
+      "u": "https://doi.org/10.1021/nl300901a",
+      "cc": "~2,100"
+    },
+    "cancado11": {
+      "c": "Cançado, Jorio, Ferreira et al. (2011). Quantifying Defects in Graphene via Raman Spectroscopy at Different Excitation Energies. Nano Lett. 11, 3190.",
+      "u": "https://doi.org/10.1021/nl201432g",
+      "cc": "~3,400"
+    },
+    "ott24": {
+      "c": "Ott & Ferrari (2024). Raman Spectroscopy of Graphene and Related Materials. Encyclopedia of Condensed Matter Physics, 233–247.",
+      "u": "",
+      "cc": "2024 review"
+    },
+    "sadezky05": {
+      "c": "Sadezky, Muckenhuber, Grothe et al. (2005). Raman spectra of soot and related carbonaceous materials. Carbon 43, 1731.",
+      "u": "https://doi.org/10.1016/j.carbon.2005.02.018",
+      "cc": "~4,400"
+    },
+    "ferraribasko13": {
+      "c": "Ferrari & Basko (2013). Raman spectroscopy as a versatile tool for studying the properties of graphene. Nat. Nanotechnol. 8, 235.",
+      "u": "https://doi.org/10.1038/nnano.2013.46",
+      "n": 1,
+      "cc": "~6,700"
+    },
+    "malard09": {
+      "c": "Malard, Pimenta, Dresselhaus & Dresselhaus (2009). Raman spectroscopy in graphene. Phys. Rep. 473, 51.",
+      "u": "https://doi.org/10.1016/j.physrep.2009.02.003",
+      "n": 1,
+      "cc": "~4,900"
+    },
+    "tk70": {
+      "c": "Tuinstra & Koenig (1970). Raman Spectrum of Graphite. J. Chem. Phys. 53, 1126.",
+      "u": "https://doi.org/10.1063/1.1674108",
+      "n": 1,
+      "cc": "~10,000"
+    },
+    "fr2000": {
+      "c": "Ferrari & Robertson (2000). Interpretation of Raman spectra of disordered and amorphous carbon. Phys. Rev. B 61, 14095.",
+      "u": "https://doi.org/10.1103/PhysRevB.61.14095",
+      "n": 1,
+      "cc": "~13,400"
+    },
+    "strain2d15": {
+      "c": "Del Corro et al. (2015). Strain Assessment in Graphene Through the Raman 2D′ Mode. J. Phys. Chem. C 119, 25358.",
+      "u": "https://doi.org/10.1021/acs.jpcc.5b09643",
+      "n": 1,
+      "cc": "45"
+    },
+    "leeryu12": {
+      "c": "Lee, Ahn, Shim, Lee & Ryu (2012). Optical separation of mechanical strain from charge doping in graphene. Nat. Commun. 3, 1024.",
+      "u": "https://doi.org/10.1038/ncomms2022",
+      "n": 1,
+      "cc": "~1,000"
+    }
+  }
+}

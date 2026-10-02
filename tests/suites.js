@@ -1,0 +1,28 @@
+// Every test suite, in run order. The runner imports each one; a missing or
+// broken suite is reported as a failure rather than silently skipped.
+export const SUITES = [
+  'library.atlas.test.js',
+  'io.text.test.js',
+  'io.columns.test.js',
+  'io.jcamp.test.js',
+  'io.spc.test.js',
+  'io.xlsx.test.js',
+  'io.import.test.js',
+  'process.despike.test.js',
+  'process.baseline.test.js',
+  'process.smooth.test.js',
+  'process.normalize.test.js',
+  'process.pipeline.test.js',
+  'detect.findpeaks.test.js',
+  'detect.detect.test.js',
+  'fit.profile.test.js',
+  'fit.lm.test.js',
+  'fit.deconvolve.test.js',
+  'match.library.test.js',
+  'match.matcher.test.js',
+  'analysis.ratios.test.js',
+  'analysis.workflow.test.js',
+  'render.layout.test.js',
+  'sample.synth.test.js',
+  'export.csv.test.js',
+];

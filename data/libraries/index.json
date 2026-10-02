@@ -1,0 +1,7 @@
+{
+  "schema": "raman-studio/library-manifest@1",
+  "note": "GitHub Pages cannot list a folder, so every band library must be named here. To add a material, drop its JSON file in this folder (same schema as graphene-go.json, see schema.json) and add one entry below.",
+  "libraries": [
+    { "file": "graphene-go.json", "default": true }
+  ]
+}
