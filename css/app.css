@@ -534,7 +534,7 @@ a.ref:hover { border-color: var(--laser-line); color: var(--ink); }
 .lbl .pos { fill: var(--ink-3); font: 500 calc(10px * var(--scale)) var(--font-mono); }
 .lbl .lead { fill: none; stroke: var(--laser-line); stroke-width: 1.2; }
 .lbl .apex { fill: var(--laser); }
-.lbl .ping { fill: none; stroke: var(--laser); stroke-width: 1.5; }
+.lbl .ping { fill: none; stroke: var(--laser); stroke-width: 1.5; opacity: 0; }
 .lbl.fit .box { stroke: var(--fit); stroke-dasharray: 4 3; }
 .lbl.fit .lead { stroke: color-mix(in srgb, var(--fit) 70%, transparent); stroke-dasharray: 3 3; }
 .lbl.fit .apex { fill: var(--fit); }

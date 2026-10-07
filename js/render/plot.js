@@ -132,8 +132,10 @@ export class Plot {
 
     for (const p of frame.panels) this._drawPanel(ctx, p, frame, pal, dark);
 
-    // ---- overlay
-    this.cancelReveal();
+    // ---- overlay. A reveal in progress survives the rebuild: it resumes on the new
+    // elements at the same point in time. Only a deliberate zoom/pan finishes it.
+    const resumeAt = this.reveal ? performance.now() - this.revealT0 : null;
+    this.reveal = null;
     this.svg.innerHTML =
       `<defs><linearGradient id="scanGrad" x1="0" x2="1"><stop offset="0" stop-color="${esc(pal('--laser'))}" stop-opacity="0"/><stop offset="1" stop-color="${esc(pal('--laser'))}" stop-opacity=".22"/></linearGradient></defs>` +
       `<g class="wins">${windowsMarkup(frame, this.scene.bandWindows)}</g>` +
@@ -141,9 +143,15 @@ export class Plot {
       `<g class="spikes">${spikesMarkup(frame, this.scene.spikes)}</g>` +
       `<g class="labels">${labelsMarkup(frame, { selectedId: this.selectedId, dimOthers: this.scene.dimOthers })}</g>` +
       `<g class="cross"></g><g class="zoom"></g><g class="scan" style="pointer-events:none"></g>`;
+    let rv = null;
     if (this.pendingReveal) {
       this.pendingReveal = false;
-      const rv = revealLabels(this.svg, frame);
+      this.revealT0 = performance.now();
+      rv = revealLabels(this.svg, frame);
+    } else if (resumeAt != null) {
+      rv = revealLabels(this.svg, frame, { elapsed: resumeAt });
+    }
+    if (rv && rv.duration) {
       this.reveal = rv;
       rv.done.then(() => { if (this.reveal === rv) this.reveal = null; });
     }

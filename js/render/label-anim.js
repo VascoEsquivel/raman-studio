@@ -11,12 +11,15 @@ const CARD_EASE = 'cubic-bezier(.3, 1.4, .5, 1)';
  * Animate every `.lbl` group in the overlay SVG.
  * @param {SVGSVGElement} svg
  * @param {object} frame  computeFrame() result (margin, pw, panels)
- * @returns {{cancel: () => void, done: Promise<void>}}
+ * @param {{elapsed?:number}} [opts] resume an interrupted reveal this many ms in: the overlay is
+ *   rebuilt on every render (e.g. the layout settling right after a file loads), and the scan
+ *   should carry on across that rather than restart or vanish
+ * @returns {{cancel: () => void, done: Promise<void>, duration: number}}
  */
-export function revealLabels(svg, frame) {
+export function revealLabels(svg, frame, { elapsed = 0 } = {}) {
   const groups = [...svg.querySelectorAll('g.lbl')];
   const reduce = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
-  if (!groups.length || reduce) return { cancel() {}, done: Promise.resolve() };
+  if (!groups.length || reduce) return { cancel() {}, done: Promise.resolve(), duration: 0 };
 
   const left = frame.margin.l, right = left + frame.pw;
   const D = Math.max(1300, Math.min(2700, 1050 + 75 * groups.length));
@@ -51,7 +54,7 @@ export function revealLabels(svg, frame) {
       { duration: 360, delay, easing: 'ease-out', fill: 'backwards' }));
     if (ping) anims.push(ping.animate(
       [{ transform: 'scale(1)', opacity: 0.95 }, { transform: 'scale(5.5)', opacity: 0 }],
-      { duration: 700, delay, easing: 'cubic-bezier(.1,.6,.3,1)', fill: 'both' }));
+      { duration: 700, delay, easing: 'cubic-bezier(.1,.6,.3,1)', fill: 'none' }));   // CSS keeps it invisible outside the ping
     if (lead) {
       const dashed = g.classList.contains('fit');
       anims.push(dashed
@@ -64,9 +67,11 @@ export function revealLabels(svg, frame) {
       { duration: 340, delay: delay + 200, easing: CARD_EASE, fill: 'backwards' }));
   }
 
+  if (elapsed > 0) for (const a of anims) a.currentTime = elapsed;
   const done = Promise.allSettled(anims.map(a => a.finished)).then(() => {});
   return {
     cancel() { for (const a of anims) { try { a.finish(); } catch { /* already gone */ } } },
     done,
+    duration: D + 600,
   };
 }
