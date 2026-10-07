@@ -43,6 +43,13 @@ function statusOf(checks) {
 
 const srcWord = s => (s === 'fit' ? 'fit' : 'detected');
 
+/* Bands the atlas describes as shoulders or as often too weak to see: D′ ("a
+   shoulder on the high-frequency side of G"), D* ("frequently too weak to fit
+   reliably"), D″ ("often small (undetectable)"). A peak finder cannot see them
+   inside GO's broad D/G envelope, so before a fit has looked for them their
+   absence is unknown, not established. */
+const SHOULDER_BANDS = new Set(['Dp', 'Dstar', 'Dpp']);
+
 /**
  * Evaluate the library's read-your-spectrum steps with the measured numbers.
  * Only the graphene-go library is evaluated; any other library gets its steps
@@ -104,8 +111,10 @@ export function evaluateWorkflow(prepared, { ratios, components, assignments, pe
       s = { id, label, state: 'present', source: 'detected', x: p.x, h: p.y, w: isNum(p.fwhm) ? p.fwhm : NaN };
     } else if (c) {
       s = { id, label, state: 'absent', why: c.significant ? 'fitted height not above 3σ noise' : 'fit component not significant' };
+    } else if (SHOULDER_BANDS.has(id) && pband(id) && searchedAt(pband(id).center)) {
+      s = { id, label, state: 'unknown', why: 'not seen by peak detection (atlas: a shoulder / often weak); run Deconvolve to resolve it' };
     } else if (pband(id) && searchedAt(pband(id).center)) {
-      s = { id, label, state: 'absent', why: 'no detected peak in its window; Deconvolve to check for a hidden shoulder' };
+      s = { id, label, state: 'absent', why: 'no detected peak in its window' };
     } else {
       s = { id, label, state: 'unknown' };
     }
@@ -118,7 +127,7 @@ export function evaluateWorkflow(prepared, { ratios, components, assignments, pe
       return `${s.label} present at ${f1(s.x)} cm⁻¹ (${srcWord(s.source)}${h})`;
     }
     if (s.state === 'absent') return `${s.label} absent (${s.why})`;
-    return `${s.label}: presence unknown — run Detect peaks or Deconvolve`;
+    return `${s.label}: ${s.why || 'presence unknown — run Detect peaks or Deconvolve'}`;
   };
   const check = (text, ok, key, detail) => ({ text, ok, key, detail });
   const present = (id, key, text) => {
@@ -308,12 +317,13 @@ export function evaluateWorkflow(prepared, { ratios, components, assignments, pe
   }
 
   // Best reading among the three identification steps: a full match beats a
-  // partial; among equals, the larger share of satisfied checks, then atlas order.
+  // partial; among partials, (satisfied − contradicted) / decided checks, so a
+  // criterion nobody can judge yet neither helps nor hurts; then atlas order.
   let best = null;
   for (const s of steps.slice(0, 3)) {
     if (s.status !== 'match' && s.status !== 'partial') continue;
-    const frac = s.checks.length ? s.checks.filter(c => c.ok === true).length / s.checks.length : 0;
-    const rank = (s.status === 'match' ? 2 : 1) + frac;
+    const t = s.checks.filter(c => c.ok === true).length, f = s.checks.filter(c => c.ok === false).length;
+    const rank = (s.status === 'match' ? 2 : 1) + (t - f) / Math.max(1, t + f);
     if (!best || rank > best.rank) best = { s, rank };
   }
   let summary = null;
@@ -325,7 +335,8 @@ export function evaluateWorkflow(prepared, { ratios, components, assignments, pe
     if (s.status === 'match') summary = { stepIndex: s.index, status: s.status, text: `Consistent with ${what} (atlas step ${n}).` };
     else {
       const open = s.checks.filter(c => c.ok !== true).map(c => c.text);
-      summary = { stepIndex: s.index, status: s.status, text: `Partly consistent with ${what} (atlas step ${n}); not confirmed: ${open.join('; ')}.` };
+      const shoulderOpen = !src.comps.length && s.checks.some(c => c.ok === null && /D′|D\*|D″/.test(c.text));
+      summary = { stepIndex: s.index, status: s.status, text: `Partly consistent with ${what} (atlas step ${n}); not confirmed: ${open.join('; ')}.${shoulderOpen ? ' Run Deconvolve to resolve the hidden shoulders.' : ''}` };
     }
   }
   return { steps, summary };

@@ -86,7 +86,7 @@ test('detection-only: absence needs the searched range', () => {
   assertEqual(unknown.summary, null);
   const known = evaluateWorkflow(p532, { peaks, assignments, xRange: [1000, 3200] });
   assertEqual(known.steps[0].status, 'match', JSON.stringify(known.steps[0]));
-  assert(has(known.steps[0], /D absent \(no detected peak in its window; Deconvolve to check for a hidden shoulder\)/), JSON.stringify(known.steps[0].evidence));
+  assert(has(known.steps[0], /D absent \(no detected peak in its window\)/), JSON.stringify(known.steps[0].evidence));
   assert(has(known.steps[0], /\(detected\)/), 'sources named');
 });
 
@@ -176,4 +176,16 @@ test('other libraries get their steps back as info with no evidence', () => {
     assertEqual(s.html, other.workflow[i]);
   }
   assertEqual(r.summary, null);
+});
+
+test('shoulder bands (D′, D*, D″) are unknown, not absent, until a fit looks for them', () => {
+  // GO-like detection: D, G, 2D weak and broad, D+D′ stronger than 2D (atlas ratio card 5)
+  const peaks = [peak('d', 1350, 900, 90), peak('g', 1592, 850, 70), peak('t', 2690, 110, 140), peak('c', 2935, 160, 140)];
+  const assignments = matchPeaks(peaks, p532);
+  const wf = evaluateWorkflow(p532, { peaks, assignments, xRange: [900, 3400] });
+  const s3 = wf.steps[2];
+  for (const lab of ['D′', 'D\*', 'D″']) assert(has(s3, new RegExp(lab + ': not seen by peak detection')), lab + ' unknown: ' + JSON.stringify(s3.evidence));
+  assertEqual(s3.status, 'partial', 'GO step partial before a fit');
+  assertEqual(wf.steps[1].status, 'no', 'few-layer graphene contradicted (card 5: disordered)');
+  assertEqual(wf.summary && wf.summary.stepIndex, 2, 'reading points at graphene oxide: ' + JSON.stringify(wf.summary));
 });

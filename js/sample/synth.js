@@ -137,6 +137,8 @@ function laserOf(lib) {
  * @param {number} [opts.background=1500] fluorescence level in counts (0 → none)
  * @param {number} [opts.noise=1] noise multiplier (0 → noise-free)
  * @param {number} [opts.spikes=3] number of cosmic-ray spikes
+ * @param {Object<string, number>} [opts.relHeights] band id → relative height, replacing the
+ *   schematic plot.A for those bands (an app choice, recorded in meta.description)
  * @param {string} [opts.id] spectrum id (default 'synth-go-<seed>')
  * @param {string} [opts.name]
  * @returns {object} Spectrum with meta { synthetic, description, seed, spikes, laserNm, components }
@@ -154,11 +156,14 @@ export function synthFromLibrary(lib, opts = {}) {
   const noise = Math.max(0, num(opts.noise, 1));
   const nSpikes = Math.max(0, Math.floor(num(opts.spikes, 3)));
 
-  const maxA = Math.max(...bands.map(b => b.plot.A));
+  const rel = opts.relHeights || {};
+  const A = b => (Number.isFinite(rel[b.id]) ? rel[b.id] : b.plot.A);
+  const maxA = Math.max(...bands.map(A));
   const components = bands.map(b => ({
     bandId: b.id, label: b.label,
-    x0: b.plot.mu, w: b.plot.sig * SIG_TO_FWHM, h: maxA > 0 ? (b.plot.A / maxA) * peakCounts : 0, g,
+    x0: b.plot.mu, w: b.plot.sig * SIG_TO_FWHM, h: maxA > 0 ? (A(b) / maxA) * peakCounts : 0, g,
   }));
+  const overridden = bands.filter(b => Number.isFinite(rel[b.id])).map(b => `${b.label} ${rel[b.id]}`);
 
   const y = background(x, level);
   if (peakCounts > 0) {
@@ -173,6 +178,7 @@ export function synthFromLibrary(lib, opts = {}) {
     'Synthetic graphene-oxide-like spectrum for demonstration, not measured data. ' +
     `Bands from the atlas schematic of the "${lib.name || lib.id}" library: each band's plot.mu, plot.A and plot.sig ` +
     `drawn as a WiRE pseudo-Voigt with FWHM = sig × ${SIG_TO_FWHM}. ` +
+    (overridden.length ? `Relative heights replaced by app choices that follow the atlas's own description of graphene oxide (strong D, D′ shoulder, D* and D″ present, weak broad 2D with I(D+D′) > I(2D)): ${overridden.join(', ')}. ` : '') +
     `App choices (not atlas data): ${g}% Gaussian lineshape; heights scaled so the tallest band is ${peakCounts} counts; ` +
     `a smooth fluorescence background of ~${level} counts; Poisson-like shot noise (×${noise}) plus ${READ_NOISE}-count read noise; ` +
     `${spikes.length} cosmic-ray spike${spikes.length === 1 ? '' : 's'} (1, 2 and 3 points wide, listed in meta.spikes). ` +
@@ -269,7 +275,10 @@ export function synthMonolayer(lib, opts = {}) {
   const description =
     'Synthetic pristine-monolayer-graphene-like spectrum for demonstration, not measured data. ' +
     `From the atlas: G at ${G.posSort} cm⁻¹ and 2D at ${T.posSort} cm⁻¹ (posSort); a single Lorentzian 2D ` +
-    `with FWHM ${twoDFwhm} cm⁻¹ and 2D/G height ratio ${ratio} (${fromAtlas}); no D band (forbidden in pristine graphene). ` +
+    `with FWHM ${twoDFwhm} cm⁻¹ (${fromAtlas}); no D band (forbidden in pristine graphene). ` +
+    (opts.ratio !== undefined
+      ? `2D/G height ratio ${ratio}: an app choice inside the atlas's monolayer range (≈2, up to ~4 suspended), set clear of the ≥ 2 decision threshold so the demo reads unambiguously. `
+      : `2D/G height ratio ${ratio} (atlas value). `) +
     `App choices (not atlas data): G FWHM ${gFwhm} cm⁻¹ and a Lorentzian G lineshape; 2D height ${peakCounts} counts; ` +
     `a weak smooth background of ~${level} counts; Poisson-like shot noise (×${noise}) plus ${READ_NOISE}-count read noise` +
     (spikes.length ? `; ${spikes.length} cosmic-ray spike${spikes.length === 1 ? '' : 's'} (meta.spikes)` : '') + '. ' +
