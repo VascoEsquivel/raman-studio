@@ -37,6 +37,10 @@ TYPES = {
 
 def make_handler(base: str):
     class Handler(http.server.SimpleHTTPRequestHandler):
+        # Keep-alive: a page load fetches ~30 modules; one socket per request
+        # (HTTP/1.0) exhausts Windows' socket buffers over many reloads.
+        protocol_version = "HTTP/1.1"
+
         def __init__(self, *a, **kw):
             super().__init__(*a, directory=str(ROOT), **kw)
 

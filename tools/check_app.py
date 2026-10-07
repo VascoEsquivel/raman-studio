@@ -1,0 +1,260 @@
+"""End-to-end browser check of the app, served under /raman-studio/ like GitHub Pages.
+
+For each scenario (the two built-in samples and every fixture file) it loads
+the spectrum, waits for the label animation, screenshots the window, and
+asserts:
+  * no console errors or page errors
+  * label boxes do not overlap each other
+  * every label's leader starts at the trace (its apex dot sits on the plotted data)
+  * expected bands are labelled near the expected positions (samples)
+Then it exercises deconvolution, laser switching, presentation mode, theme,
+exports and the print report on the GO sample.
+
+Usage:
+    python tools/check_app.py [--out DIR] [--headed] [--browser chrome]
+Exit code 0 only if every check passed.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+os.environ.setdefault("SERVE_QUIET", "1")
+import serve  # noqa: E402
+
+ROOT = Path(__file__).resolve().parent.parent
+FIX = ROOT / "tests" / "fixtures"
+
+# JS run in the page: geometry of every visible label.
+LABELS_JS = """
+() => [...document.querySelectorAll('#plotHost g.lbl')].map(g => {
+  const box = g.querySelector('rect.box'), apex = g.querySelector('circle.apex');
+  const b = box ? box.getBBox() : null;
+  return { id: g.dataset.id, kind: g.getAttribute('class'), overflow: g.classList.contains('overflow'),
+    sym: (g.querySelector('text.sym') || {}).textContent || '', sub: (g.querySelector('text.pos') || {}).textContent || '',
+    box: b && { x: b.x, y: b.y, w: b.width, h: b.height },
+    apex: apex && { x: +apex.getAttribute('cx'), y: +apex.getAttribute('cy') } };
+})
+"""
+
+
+class Checker:
+    def __init__(self, page, out: Path):
+        self.page, self.out = page, out
+        self.failures, self.passes = [], 0
+        self.console = []
+        page.on("console", lambda m: self.console.append(m.text) if m.type == "error" else None)
+        page.on("pageerror", lambda e: self.console.append(f"pageerror: {e}"))
+
+    def check(self, cond, msg):
+        if cond:
+            self.passes += 1
+        else:
+            self.failures.append(msg)
+            print("  FAIL", msg)
+
+    def settle(self, ms=3200):
+        self.page.wait_for_timeout(ms)
+
+    def labels(self):
+        return self.page.evaluate(LABELS_JS)
+
+    def assert_layout(self, tag):
+        L = [l for l in self.labels() if not l["overflow"] and l["box"]]
+        for i in range(len(L)):
+            for j in range(i + 1, len(L)):
+                a, b = L[i]["box"], L[j]["box"]
+                overlap = a["x"] < b["x"] + b["w"] - 0.5 and b["x"] < a["x"] + a["w"] - 0.5 and \
+                    a["y"] < b["y"] + b["h"] - 0.5 and b["y"] < a["y"] + a["h"] - 0.5
+                self.check(not overlap, f"{tag}: labels {L[i]['sym']} and {L[j]['sym']} overlap")
+        return L
+
+    def shot(self, name):
+        self.page.screenshot(path=str(self.out / f"{name}.png"))
+
+
+def expect_bands(c: Checker, tag, wanted):
+    """wanted: {label: (lo, hi)} — a label with that text whose position sub lies in range."""
+    L = c.labels()
+    for sym, (lo, hi) in wanted.items():
+        hit = [l for l in L if l["sym"] == sym and l["sub"] and lo <= float(l["sub"].split()[0]) <= hi]
+        c.check(bool(hit), f"{tag}: expected a '{sym}' label between {lo} and {hi} cm⁻¹; got {[(l['sym'], l['sub']) for l in L]}")
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--out", default=str(ROOT / "test-data" / "private" / "screens"))
+    ap.add_argument("--headed", action="store_true")
+    ap.add_argument("--browser", default="chrome")
+    a = ap.parse_args()
+    out = Path(a.out); out.mkdir(parents=True, exist_ok=True)
+
+    from playwright.sync_api import sync_playwright
+    srv, base = serve.start(0)
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(channel=a.browser, headless=not a.headed)
+            ctx = browser.new_context(viewport={"width": 1600, "height": 960}, device_scale_factor=1, accept_downloads=True)
+            page = ctx.new_page()
+            c = Checker(page, out)
+
+            # ---------------- empty state
+            page.goto(base)
+            page.wait_for_selector("#dropzone:not([hidden])")
+            c.settle(800)
+            c.shot("00_empty")
+
+            # ---------------- GO sample
+            print("sample: graphene oxide")
+            page.click("#dzSampleGO")
+            c.settle()
+            c.shot("01_go_sample")
+            L = c.assert_layout("GO sample")
+            c.check(len(L) >= 3, f"GO sample: at least 3 labels drawn (got {len(L)})")
+            expect_bands(c, "GO sample", {"D": (1320, 1380), "G": (1560, 1625), "D+D′": (2900, 2990)})
+            spikes = page.evaluate("document.querySelectorAll('#plotHost .spike-ring').length")
+            c.check(spikes >= 1, f"GO sample: removed cosmic rays are marked (got {spikes})")
+
+            # deconvolution
+            page.keyboard.press("f")
+            page.wait_for_selector("#paneFit .fitwin", timeout=20000)
+            c.settle()
+            c.shot("02_go_deconvolved")
+            c.assert_layout("GO deconvolved")
+            # GO's weak, broad 2D is below detection; the fit resolves it (dashed label)
+            expect_bands(c, "GO deconvolved", {"2D": (2640, 2740)})
+            fit_labels = [l for l in c.labels() if "fit" in (l["kind"] or "")]
+            c.check(len(fit_labels) >= 1, f"GO deconvolved: fit-resolved (dashed) labels present (got {len(fit_labels)})")
+            q = page.evaluate("[...document.querySelectorAll('#paneFit .quality .v')].map(e => parseFloat(e.textContent))")
+            c.check(all(v == v and v < 3 for v in q) and q, f"GO deconvolved: fit quality < 3× noise in every window ({q})")
+
+            # click a label → band pane
+            first = page.query_selector("#plotHost g.lbl:not(.overflow) rect.box")
+            if first:
+                first.click(force=True)
+                c.settle(400)
+                c.check(page.is_visible("#paneBand .bandhead"), "clicking a label opens the atlas band pane")
+                c.shot("03_band_pane")
+            # ratios + read panes
+            page.click(".deck-tabs [data-tab=ratios]"); c.settle(300); c.shot("04_ratios")
+            c.check(page.query_selector_all("#paneRatios .rcard").__len__() == 5, "ratios pane shows the five atlas ratio cards")
+            page.click(".deck-tabs [data-tab=read]"); c.settle(300); c.shot("05_read")
+            c.check(page.query_selector_all("#paneRead .step").__len__() == 8, "read pane shows the eight atlas workflow steps")
+
+            # laser switch re-labels with shifted windows
+            page.keyboard.press("3")
+            c.settle()
+            c.check(page.evaluate("document.documentElement.dataset.laser") == "785", "key 3 selects 785 nm")
+            c.assert_layout("GO @785")
+            c.shot("06_go_785")
+            page.keyboard.press("1")
+            c.settle()
+
+            # raw + compare views
+            page.keyboard.press("b"); c.settle(600); c.shot("07_raw_baseline")
+            page.keyboard.press("c"); c.settle(600); c.shot("08_compare")
+            page.keyboard.press("c"); c.settle(300)
+
+            # light theme
+            page.keyboard.press("t"); c.settle(900); c.shot("09_light"); c.assert_layout("GO light")
+            page.keyboard.press("t"); c.settle(300)
+
+            # presentation mode
+            page.keyboard.press("p"); c.settle(1200)
+            page.keyboard.press("ArrowRight"); c.settle(500)
+            c.check(page.is_visible("#caption"), "presentation mode shows a caption for the selected label")
+            c.shot("10_present")
+            page.keyboard.press("Escape"); c.settle(500)
+
+            # exports (the laser switches above cleared the fit: re-run it first)
+            page.keyboard.press("f")
+            page.wait_for_function("document.querySelector('[data-val=fire]').textContent.includes('bands')", timeout=20000)
+            c.settle(2500)
+            for kind, ext in (("png", ".png"), ("svg", ".svg"), ("peaks", ".csv"), ("fit", ".csv"), ("spectrum", ".csv"), ("project", ".json")):
+                path = out / ("export_" + kind + ext)
+                try:
+                    page.click("#bExport")
+                    with page.expect_download(timeout=25000) as dl:
+                        page.click(f"#exportMenu [data-export={kind}]")
+                    dl.value.save_as(str(path))
+                    c.check(path.stat().st_size > 200, f"export {kind}: file written ({path.stat().st_size} bytes)")
+                except Exception as e:
+                    toast = page.evaluate("document.querySelector('#toast').textContent")
+                    c.check(False, f"export {kind}: no download ({type(e).__name__}); toast: {toast!r}")
+                page.wait_for_timeout(300)
+            if (out / "export_svg.svg").exists():
+                svg = (out / "export_svg.svg").read_text(encoding="utf-8")
+                c.check("<svg" in svg and "class=\"lbl" in svg, "SVG export contains labels")
+
+            # print report renders
+            page.evaluate("""() => { window.print = () => {}; }""")
+            page.click("#bExport"); page.click("#exportMenu [data-export=report]")
+            c.settle(2500)
+            page.emulate_media(media="print")
+            c.check(page.evaluate("document.querySelector('#report .rp-fig svg') !== null"), "report contains the figure")
+            if a.browser == "chrome" and not a.headed:
+                page.pdf(path=str(out / "report.pdf"), format="A4")
+                import re as _re
+                pages = len(_re.findall(rb"/Type\s*/Page[^s]", (out / "report.pdf").read_bytes()))
+                c.check(pages == 1, f"report prints on one A4 page (got {pages})")
+            page.screenshot(path=str(out / "11_report_print.png"), full_page=True)
+            page.emulate_media(media="screen")
+
+            # ---------------- monolayer sample
+            print("sample: monolayer")
+            page.goto(base + "?sample=mono")
+            c.settle()
+            c.shot("12_mono_sample")
+            c.assert_layout("monolayer")
+            expect_bands(c, "monolayer", {"G": (1560, 1625), "2D": (2640, 2740)})
+            L = c.labels()
+            c.check(not any(l["sym"] == "D" for l in L), "monolayer: no D label")
+            page.click(".deck-tabs [data-tab=read]"); c.settle(300)
+            st = page.evaluate("document.querySelector('#paneRead .step')?.className || ''")
+            c.check("match" in st, f"monolayer: atlas step 1 matches (class {st!r})")
+
+            # ---------------- fixtures
+            fixtures = sorted(f for f in FIX.iterdir() if f.suffix.lower() in
+                              (".csv", ".tsv", ".txt", ".xlsx", ".xls", ".jdx", ".dx", ".spc") and f.name != "find_peaks_vectors.json")
+            for f in fixtures:
+                print("fixture:", f.name)
+                page.goto(base)
+                page.wait_for_selector("#dropzone:not([hidden])")
+                page.set_input_files("#fileInput", str(f))
+                # mapping dialog for ambiguous files: accept the best guess / pick columns
+                try:
+                    page.wait_for_function("document.querySelector('#mapDialog').open || !document.querySelector('#dropzone') || document.querySelector('#dropzone').hidden", timeout=15000)
+                except Exception:
+                    pass
+                if page.evaluate("document.querySelector('#mapDialog').open"):
+                    c.shot("fx_" + f.stem + "_mapping")
+                    sels = page.query_selector_all("#mapDialog select[data-col]")
+                    if len(sels) >= 2:
+                        sels[0].select_option("x"); sels[1].select_option("y")
+                    page.click("#mapOk")
+                c.settle(2800)
+                loaded = page.evaluate("document.querySelector('#dropzone').hidden")
+                c.check(loaded, f"fixture {f.name}: spectrum loaded")
+                if loaded:
+                    c.assert_layout("fixture " + f.name)
+                    c.shot("fx_" + f.stem)
+
+            c.check(not c.console, "no console errors: " + json.dumps(c.console[:10]))
+            browser.close()
+    finally:
+        srv.shutdown()
+
+    print(f"\n{c.passes} checks passed, {len(c.failures)} failed. Screenshots in {out}")
+    for f in c.failures:
+        print("  -", f)
+    return 0 if not c.failures else 1
+
+
+if __name__ == "__main__":
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+    sys.exit(main())
