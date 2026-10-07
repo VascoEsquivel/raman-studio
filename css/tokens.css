@@ -1,0 +1,122 @@
+/* Raman Studio — design tokens.
+   Two themes: "phosphor" (dark, default) and "chart recorder" (light, paper).
+   The accent colour follows the selected excitation laser, so the whole
+   instrument visibly re-tunes when you switch lines: 532 green, 633 HeNe red,
+   785 near-IR (invisible, so shown as crimson). */
+
+:root {
+  --font-ui: "IBM Plex Sans Condensed", "Roboto Condensed", "Arial Narrow", system-ui, sans-serif;
+  --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+
+  --scale: 1;                 /* presentation mode raises this */
+  --radius: 10px;
+  --radius-s: 6px;
+  --ease: cubic-bezier(.2, .7, .2, 1);
+  --ease-snap: cubic-bezier(.3, 1.4, .5, 1);
+
+  /* laser lines (dark theme values) */
+  --l532: #4dff9a;
+  --l633: #ff5b3a;
+  --l785: #ff3f86;
+}
+
+/* ---------- phosphor (dark) ---------- */
+:root, :root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #07090c;
+  --bezel: #0b0e13;
+  --panel: #0e1218;
+  --panel-2: #131922;
+  --panel-3: #1a222d;
+  --scope: #05070a;
+  --line: #1c2430;
+  --line-2: #273241;
+  --line-3: #364457;
+  --ink: #e7edf3;
+  --ink-2: #a3b0bd;
+  --ink-3: #66727f;
+  --ink-4: #3e4955;
+  --grid-major: rgba(160, 185, 210, .085);
+  --grid-minor: rgba(160, 185, 210, .035);
+  --axis: #4a5767;
+  --tick-text: #7b8896;
+  --raw: #7f8b98;
+  --baseline: #c6a15b;
+  --spike: #ff4f6d;
+  --fit: #ffc35a;          /* deconvolution-resolved bands */
+  --fit-env: #f2f5f8;      /* fit envelope */
+  --unassigned: #8b97a4;
+  --region: #5fd3c4;       /* non-lattice regions (sp³ C–H) */
+  --ok: #45d39a;
+  --warn: #ffb547;
+  --bad: #ff5f6d;
+  --shadow: 0 10px 40px rgba(0, 0, 0, .55), 0 1px 0 rgba(255, 255, 255, .03) inset;
+  --glass: rgba(11, 14, 19, .82);
+}
+
+/* ---------- chart recorder (light) ---------- */
+:root[data-theme="light"] {
+  color-scheme: light;
+  --l532: #0b9a52;
+  --l633: #d63a1c;
+  --l785: #c4155b;
+  --bg: #efeae0;
+  --bezel: #f6f2ea;
+  --panel: #fbf9f4;
+  --panel-2: #f3eee4;
+  --panel-3: #e9e2d5;
+  --scope: #fffdf8;
+  --line: #ddd5c6;
+  --line-2: #cfc5b3;
+  --line-3: #b9ad98;
+  --ink: #1d1b17;
+  --ink-2: #4f4a41;
+  --ink-3: #847c6e;
+  --ink-4: #b4ab9b;
+  --grid-major: rgba(205, 95, 70, .16);   /* recorder-paper red grid */
+  --grid-minor: rgba(205, 95, 70, .065);
+  --axis: #6f6658;
+  --tick-text: #6f6658;
+  --raw: #8c8476;
+  --baseline: #a8741b;
+  --spike: #d81b45;
+  --fit: #b86e00;
+  --fit-env: #1d1b17;
+  --unassigned: #7a7366;
+  --region: #0f8b7d;
+  --ok: #138a5a;
+  --warn: #b26a00;
+  --bad: #c62839;
+  --shadow: 0 10px 30px rgba(60, 45, 20, .14), 0 1px 0 rgba(255, 255, 255, .6) inset;
+  --glass: rgba(251, 249, 244, .88);
+}
+
+/* the active laser line → accent */
+:root[data-laser="532"] { --laser: var(--l532); }
+:root[data-laser="633"] { --laser: var(--l633); }
+:root[data-laser="785"] { --laser: var(--l785); }
+:root {
+  --laser-soft: color-mix(in srgb, var(--laser) 16%, transparent);
+  --laser-faint: color-mix(in srgb, var(--laser) 7%, transparent);
+  --laser-line: color-mix(in srgb, var(--laser) 55%, transparent);
+  --laser-ink: color-mix(in srgb, var(--laser) 78%, var(--ink));
+}
+
+/* presentation: projector-grade contrast and size */
+:root.present {
+  --scale: 1.45;
+  --bg: #000;
+  --scope: #000;
+  --grid-major: rgba(200, 215, 230, .12);
+  --grid-minor: rgba(200, 215, 230, .045);
+  --ink-2: #c8d2dc;
+  --tick-text: #b4c0cc;
+}
+:root.present[data-theme="light"] {
+  --bg: #fff;
+  --scope: #fff;
+  --grid-major: rgba(205, 95, 70, .2);
+  --ink-2: #2b2822;
+  --tick-text: #2b2822;
+}

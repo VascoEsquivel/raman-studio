@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en" data-theme="dark" data-laser="532">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Raman Studio</title>
+<meta name="description" content="Drop in a Raman spectrum, clean it, detect peaks and label them from the graphene / graphene-oxide band atlas. Runs entirely in your browser.">
+<meta name="theme-color" content="#07090c">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2307090c'/%3E%3Cpath d='M4 22h5l3-12 4 16 3-9 2 5h7' fill='none' stroke='%234dff9a' stroke-width='2.4' stroke-linejoin='round' stroke-linecap='round'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@400;500;600;700&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&display=swap">
+<link rel="stylesheet" href="css/tokens.css">
+<link rel="stylesheet" href="css/app.css">
+<link rel="stylesheet" href="css/print.css">
+</head>
+<body>
+<div class="app" id="app">
+
+  <!-- ============ instrument bezel ============ -->
+  <header class="bezel">
+    <div class="brand">
+      <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><rect x="1" y="1" width="30" height="30" rx="7"/><path d="M4 22h5l3-12 4 16 3-9 2 5h7"/></svg>
+      <div class="brand-text"><span class="brand-name">Raman Studio</span><span class="brand-sub">band analyzer · graphene / GO atlas</span></div>
+    </div>
+
+    <div class="spectrum-switch" id="spectrumSwitch" hidden>
+      <button class="chip" id="spectrumChip" aria-haspopup="listbox" aria-expanded="false">
+        <span class="chip-dot"></span><span class="chip-name" id="spectrumName">—</span><span class="chip-count" id="spectrumCount"></span><svg class="chev" viewBox="0 0 10 6"><path d="M1 1l4 4 4-4"/></svg>
+      </button>
+      <div class="menu" id="spectrumMenu" role="listbox" hidden></div>
+    </div>
+
+    <div class="bezel-right">
+      <div class="laser" role="radiogroup" aria-label="Excitation laser">
+        <span class="laser-cap">λ<sub>ex</sub></span>
+        <button class="laser-key" role="radio" data-nm="532" aria-checked="true" title="532 nm (key 1)"><i></i>532</button>
+        <button class="laser-key" role="radio" data-nm="633" aria-checked="false" title="633 nm (key 2)"><i></i>633</button>
+        <button class="laser-key" role="radio" data-nm="785" aria-checked="false" title="785 nm (key 3)"><i></i>785</button>
+        <span class="laser-unit">nm</span>
+      </div>
+      <div class="tools">
+        <button class="tool" id="bOpen" title="Open file (O)"><svg viewBox="0 0 20 20"><path d="M3 6.5V15a1.5 1.5 0 0 0 1.5 1.5h11A1.5 1.5 0 0 0 17 15V8.5A1.5 1.5 0 0 0 15.5 7H10L8.3 4.8a1 1 0 0 0-.8-.3H4.5A1.5 1.5 0 0 0 3 6z"/></svg><span>Open</span></button>
+        <div class="tool-wrap">
+          <button class="tool" id="bExport" aria-haspopup="menu" aria-expanded="false" title="Export"><svg viewBox="0 0 20 20"><path d="M10 3v9m0 0l-3.5-3.5M10 12l3.5-3.5M4 14v1.5A1.5 1.5 0 0 0 5.5 17h9a1.5 1.5 0 0 0 1.5-1.5V14"/></svg><span>Export</span></button>
+          <div class="menu menu-right" id="exportMenu" role="menu" hidden>
+            <button role="menuitem" data-export="png">Figure · PNG <kbd>3×</kbd></button>
+            <button role="menuitem" data-export="svg">Figure · SVG <kbd>vector</kbd></button>
+            <hr>
+            <button role="menuitem" data-export="peaks">Peak table · CSV</button>
+            <button role="menuitem" data-export="fit">Fit parameters · CSV</button>
+            <button role="menuitem" data-export="spectrum">Processed spectrum · CSV</button>
+            <hr>
+            <button role="menuitem" data-export="report">Printable report…</button>
+            <button role="menuitem" data-export="project">Save project · JSON <kbd>Ctrl S</kbd></button>
+            <button role="menuitem" data-export="openproject">Open project…</button>
+          </div>
+        </div>
+        <button class="tool icon" id="bTheme" title="Light / dark (T)"><svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="6.2"/><path d="M10 3.8a6.2 6.2 0 0 1 0 12.4z" class="fill"/></svg></button>
+        <button class="tool icon" id="bPresent" title="Presentation mode (P)"><svg viewBox="0 0 20 20"><path d="M3 7V4h3M17 7V4h-3M3 13v3h3M17 13v3h-3"/></svg></button>
+        <button class="tool icon" id="bHelp" title="Keyboard shortcuts (?)"><svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="7"/><path d="M8 8a2 2 0 1 1 2.7 1.9c-.5.2-.7.6-.7 1.1v.5M10 14v.2"/></svg></button>
+      </div>
+    </div>
+  </header>
+
+  <!-- ============ main stage ============ -->
+  <main class="stage">
+    <section class="scope" id="scope" aria-label="Spectrum plot">
+      <div class="scope-frame">
+        <div class="readout" id="readout" aria-live="off">
+          <span class="ro-k">x</span><span class="ro-v" id="roX">—</span><span class="ro-u">cm⁻¹</span>
+          <span class="ro-sep"></span>
+          <span class="ro-k">y</span><span class="ro-v" id="roY">—</span>
+          <span class="ro-sep"></span>
+          <span class="ro-band" id="roBand"></span>
+        </div>
+        <div class="view-modes" id="viewModes" hidden>
+          <div class="seg" role="radiogroup" aria-label="Trace view">
+            <button data-display="processed" aria-checked="true" role="radio" title="Processed spectrum">Processed</button>
+            <button data-display="raw" aria-checked="false" role="radio" title="Raw spectrum with baseline and removed spikes (B)">Raw + baseline</button>
+            <button data-display="both" aria-checked="false" role="radio" title="Raw and processed, stacked (C)">Compare</button>
+          </div>
+          <div class="seg" id="stackModes" role="radiogroup" aria-label="Multiple spectra" hidden>
+            <button data-stack="single" aria-checked="true" role="radio">Single</button>
+            <button data-stack="overlay" aria-checked="false" role="radio">Overlay</button>
+            <button data-stack="stacked" aria-checked="false" role="radio">Stacked</button>
+          </div>
+        </div>
+        <div class="plot-host" id="plotHost"></div>
+        <div class="minimap-host" id="minimapHost" hidden></div>
+
+        <!-- empty state / drop zone -->
+        <div class="dropzone" id="dropzone">
+          <div class="dz-inner">
+            <div class="dz-beam" aria-hidden="true"><span></span></div>
+            <h1 class="dz-title">Drop a Raman spectrum</h1>
+            <p class="dz-sub">Excel, CSV, TSV, TXT, JCAMP-DX or SPC. Whatever your instrument exports.</p>
+            <div class="dz-actions">
+              <button class="key key-primary" id="dzOpen">Choose file<kbd>O</kbd></button>
+              <button class="key" id="dzSampleGO">Sample · graphene oxide</button>
+              <button class="key" id="dzSampleMono">Sample · monolayer graphene</button>
+            </div>
+            <p class="dz-privacy"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3" y="7" width="10" height="7" rx="1.5"/><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"/></svg>Files are read in your browser. Nothing is uploaded.</p>
+          </div>
+        </div>
+        <div class="drop-veil" id="dropVeil" hidden><div>Release to load spectrum</div></div>
+        <div class="busy" id="busy" hidden><span></span><em id="busyText">Working…</em></div>
+      </div>
+
+      <!-- signal chain -->
+      <nav class="chain" id="chain" aria-label="Processing chain" hidden></nav>
+    </section>
+
+    <!-- ============ side deck ============ -->
+    <aside class="deck" id="deck" hidden>
+      <div class="deck-tabs" role="tablist">
+        <button role="tab" data-tab="peaks" aria-selected="true">Peaks</button>
+        <button role="tab" data-tab="ratios" aria-selected="false">Ratios</button>
+        <button role="tab" data-tab="read" aria-selected="false">Read</button>
+        <button role="tab" data-tab="fit" aria-selected="false">Fit</button>
+        <button role="tab" data-tab="band" aria-selected="false">Band</button>
+      </div>
+      <div class="deck-body">
+        <section class="pane" data-pane="peaks" id="panePeaks"></section>
+        <section class="pane" data-pane="ratios" id="paneRatios" hidden></section>
+        <section class="pane" data-pane="read" id="paneRead" hidden></section>
+        <section class="pane" data-pane="fit" id="paneFit" hidden></section>
+        <section class="pane" data-pane="band" id="paneBand" hidden></section>
+      </div>
+    </aside>
+  </main>
+
+  <!-- presentation caption -->
+  <div class="caption" id="caption" hidden></div>
+</div>
+
+<!-- dialogs -->
+<dialog class="dialog" id="mapDialog" aria-labelledby="mapTitle"></dialog>
+<dialog class="dialog" id="helpDialog" aria-labelledby="helpTitle"></dialog>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<!-- printable report (hidden on screen) -->
+<article class="report" id="report" aria-hidden="true"></article>
+
+<input type="file" id="fileInput" accept=".csv,.tsv,.txt,.dat,.asc,.xlsx,.xls,.jdx,.dx,.jcamp,.spc" multiple hidden>
+<input type="file" id="projectInput" accept=".json" hidden>
+<noscript><p style="padding:2rem;font:16px system-ui">Raman Studio needs JavaScript.</p></noscript>
+<script type="module" src="js/main.js"></script>
+</body>
+</html>
