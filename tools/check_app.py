@@ -11,7 +11,9 @@ Then it exercises deconvolution, laser switching, presentation mode, theme,
 exports and the print report on the GO sample.
 
 Usage:
-    python tools/check_app.py [--out DIR] [--headed] [--browser chrome]
+    python tools/check_app.py [--out DIR] [--headed] [--browser chrome] [--url URL]
+--url runs the same checks against a deployed copy instead of a local server,
+e.g. --url https://vascoesquivel.github.io/raman-studio/
 Exit code 0 only if every check passed.
 """
 from __future__ import annotations
@@ -90,11 +92,12 @@ def main() -> int:
     ap.add_argument("--out", default=str(ROOT / "test-data" / "private" / "screens"))
     ap.add_argument("--headed", action="store_true")
     ap.add_argument("--browser", default="chrome")
+    ap.add_argument("--url", default="", help="check a deployed copy (must end with /)")
     a = ap.parse_args()
     out = Path(a.out); out.mkdir(parents=True, exist_ok=True)
 
     from playwright.sync_api import sync_playwright
-    srv, base = serve.start(0)
+    srv, base = (None, a.url) if a.url else serve.start(0)
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(channel=a.browser, headless=not a.headed)
@@ -246,7 +249,8 @@ def main() -> int:
             c.check(not c.console, "no console errors: " + json.dumps(c.console[:10]))
             browser.close()
     finally:
-        srv.shutdown()
+        if srv:
+            srv.shutdown()
 
     print(f"\n{c.passes} checks passed, {len(c.failures)} failed. Screenshots in {out}")
     for f in c.failures:

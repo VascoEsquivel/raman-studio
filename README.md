@@ -146,6 +146,7 @@ fixture per format. To run everything headless:
 pip install playwright          # drives your installed Chrome or Edge
 python tools/run_tests.py       # unit tests
 python tools/check_app.py       # end-to-end: samples, every fixture, exports, screenshots
+python tools/check_app.py --url https://vascoesquivel.github.io/raman-studio/   # same checks on the live site
 ```
 
 Lab files for local testing go in `test-data/private/`, which is gitignored.
