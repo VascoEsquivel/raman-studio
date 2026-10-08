@@ -194,8 +194,11 @@ Module contracts are in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
   your instruments yet (put some in `test-data/private/`). SPC support covers
   the new format only and is experimental. Wavelength (nm) x-axes are not
   converted to Raman shift.
-- **Cosmic-ray removal** handles spikes up to 3 points wide. Wider bursts, or a
-  spike on a band narrower than about 5 points, are left alone.
+- **Cosmic-ray removal is incomplete on real data.** It handles spikes up to 3
+  points wide; wider bursts, or a spike on a band narrower than about 5 points,
+  are left alone. On a real instrument spectrum tested in October 2026, some
+  spikes were not removed. This has not been diagnosed yet: the synthetic test
+  spikes are all removed, so the real file is needed to find out why.
 - **Multiple spectra** are compared visually (overlay or stacked). Processing,
   labels, ratios and exports apply to the spectrum currently selected; there is
   no batch export yet.
