@@ -14,6 +14,9 @@ import { computeRatios } from './analysis/ratios.js';
 import { evaluateWorkflow } from './analysis/workflow.js';
 import { acquisition, qualityFlags } from './analysis/acquisition.js';
 import { mapValues, correlation, layout } from './analysis/map.js';
+import { measureSiPeak } from './analysis/calibration.js';
+import { labelSnapshot, labelDataset, QUALITY } from './analysis/labels.js';
+import { parseReferenceList, candidatesAt, materialSummary } from './match/reference.js';
 import { synthFromLibrary, synthMonolayer } from './sample/synth.js';
 import { peakTableCSV, fitParamsCSV, spectrumCSV, toCSV } from './export/csv.js';
 import { buildFigureSVG, svgToPng } from './export/image.js';
@@ -25,7 +28,7 @@ import { Chain } from './ui/chain.js';
 import * as panes from './ui/panels.js';
 import { askMapping } from './ui/mapper.js';
 import { showHelp } from './ui/help.js';
-import { $, $$, esc, toast, download, store, fmt, fmtX, dismissable, plainText } from './ui/dom.js';
+import { $, $$, esc, toast, download, store, fmt, fmtPm, fmtX, dismissable, plainText } from './ui/dom.js';
 
 const clone = o => JSON.parse(JSON.stringify(o));
 const OVERLAY = ['#6aa9ff', '#c58bff', '#ffb547', '#5fd3c4', '#ff7aa8', '#a6d46a', '#f0e26a'];
@@ -46,6 +49,11 @@ const S = {
   deconv: null, ratios: [], workflow: null, noiseSigma: 0,
   display: 'processed', showComponents: true, labelAllFit: false,
   fitAllBands: false,   // true: fit every library band, no model selection
+  refList: null,        // a private reference list loaded for this session only (never saved)
+  calibration: null,    // Si offset: { offsetCm, measuredCm, measuredSe, fwhmCm, nominalCm, nominalSource, siSpectrum, window, appliedAt }
+  siResult: null,       // a Si measurement not applied yet: { spectrumId, spectrumName, ...measureSiPeak() }
+  siWindow: { lo: 480, hi: 560 },
+  labels: new Map(),    // spectrum id → reviewer label (see analysis/labels.js)
   selectedId: null, hoverId: null, tab: 'peaks', labelsOn: true,
 };
 let manualSeq = 1;
@@ -104,8 +112,13 @@ function companionsFor(sp) {
   const sameX = o => o.x.length === n && o.x.every((v, i) => Math.abs(v - sp.x[i]) <= tolX);
   return S.spectra.filter(o => o !== sp && o.source && o.source.file === sp.source.file && o.source.sheet === sp.source.sheet && sameX(o)).map(o => o.y);
 }
+/** The spectrum on the calibrated axis: every x shifted by the session's Si offset. */
+function calibrated(sp) {
+  const off = S.calibration ? S.calibration.offsetCm : 0;
+  return off ? { ...sp, x: Float64Array.from(sp.x, v => v + off) } : sp;
+}
 function pipelineFor(sp, edits = null) {
-  return runPipeline(sp, S.settings, { bandWindow: gWindow(), companions: companionsFor(sp), spikeEdits: edits });
+  return runPipeline(calibrated(sp), S.settings, { bandWindow: gWindow(), companions: companionsFor(sp), spikeEdits: edits });
 }
 
 // ------------------------------------------------------------------ compute chain
@@ -212,6 +225,7 @@ function buildItems() {
       band, pband: band ? pbandById(band.id) : null, region,
       alternatives: a.alternatives || [], override: !!a.override,
       nearest: a.kind === 'unassigned' ? nearestBand(p.x) : null,
+      refCands: a.kind === 'unassigned' && S.refList ? candidatesAt(p.x, S.refList).slice(0, 4) : [],
       priority: (a.kind === 'band' ? 2 : 1) + Math.min(1, (p.prominence || 0) / ((S.noiseSigma || 1) * 40)),
     });
   });
@@ -377,6 +391,7 @@ function viewModel() {
     fitBounds: lib ? `bounded to ${lib.fitDefaults?.fwhmMin ?? '—'}–${lib.fitDefaults?.fwhmMax ?? '—'} cm⁻¹` : '',
     data: dataModel(),
     map: S.tab === 'map' ? mapModel() : null,
+    refList: refListModel(),
   };
 }
 
@@ -391,7 +406,19 @@ function dataModel() {
     despikeOn: !!(P.steps && P.steps.despike), despike: S.settings.despike, info: P.despikeInfo,
     spikes: P.spikes || [], suspects: P.suspects || [], restored: P.restored || [], edits: S.spikeEdits,
     setSize: companionsFor(sp).length,
+    calibration: S.calibration, siWindow: S.siWindow,
+    si: S.siResult && S.siResult.spectrumId === sp.id ? S.siResult : null,
+    label: S.labels.get(sp.id) || null, quality: QUALITY, reviewer: store.get('rs.reviewer', ''),
+    labelled: S.spectra.filter(o => S.labels.has(o.id)).length, total: S.spectra.length,
   };
+}
+
+/** The loaded reference list and which of its materials line up with the unassigned peaks. */
+function refListModel() {
+  const L = S.refList;
+  if (!L) return null;
+  const xs = S.items.filter(i => i.tier !== 'fit' && i.kind === 'unassigned').map(i => i.x);
+  return { name: L.name, toleranceCm: L.toleranceCm, note: L.note, count: L.materials.length, summary: materialSummary(xs, L) };
 }
 
 /** The spectra of the active spectrum's map (same file and sheet, with stage coordinates), in map order. */
@@ -463,7 +490,7 @@ function renderAll() {
     settings: S.settings, detect: S.detect, toleranceCm: tol(),
     libraries: S.libraries, libraryId: lib?.id, libraryShort: lib ? (lib.id === 'graphene-go' ? 'graphene/GO atlas' : lib.name) : '—',
     refText: refText(),
-    stats: P ? { points: P.x.length, x0: P.x[0], x1: P.x[P.x.length - 1], source: sp?.source?.format, spikes: (P.spikes || []).length, suspects: (P.suspects || []).length, peaks: S.peaks.length } : {},
+    stats: P ? { points: P.x.length, offset: S.calibration ? S.calibration.offsetCm : 0, x0: P.x[0], x1: P.x[P.x.length - 1], source: sp?.source?.format, spikes: (P.spikes || []).length, suspects: (P.suspects || []).length, peaks: S.peaks.length } : {},
     despikeInfo: P ? P.despikeInfo : null, setSize: sp ? companionsFor(sp).length : 0,
     canDeconvolve: has && !!S.prepared,
     deconvText: S.deconv ? `${S.deconv.components.filter(c => c.significant).length} bands · q ${S.deconv.windows.map(w => isFinite(w.stats?.quality) ? w.stats.quality.toFixed(2) : '—').join(' / ')}` : 'atlas band fit · F',
@@ -656,6 +683,13 @@ function addSpectra(list) {
 function setActive(id, { reveal = true, resetView = true } = {}) {
   S.activeId = id;
   S.manual = []; S.hidden = []; S.overrides = {}; S.spikeEdits = { keep: [], zaps: [] }; S.selectedId = null; S.deconv = null;
+  // a labelled spectrum reopens as the reviewer left it
+  const lb = S.labels.get(id);
+  if (lb) {
+    const e = clone(lb.edits);
+    S.spikeEdits = e.spikeEdits; S.manual = e.manual; S.hidden = e.hidden; S.overrides = e.overrides;
+    manualSeq = 1 + S.manual.reduce((m, q) => Math.max(m, +String(q.id).split(':')[1] || 0), 0);
+  }
   undoStack.length = 0; redoStack.length = 0;
   const sp = active();
   if (sp && sp.meta && isFinite(sp.meta.laserNm)) {
@@ -741,12 +775,24 @@ async function doExport(kind) {
         else download(await svgToPng(svg, 3), base + '_raman.png');
         break;
       }
-      case 'peaks': download(new Blob([peakTableCSV(csvRows())], { type: 'text/csv' }), base + '_peaks.csv'); break;
+      case 'peaks': download(new Blob([peakTableCSV(csvRows(), { referenceCandidates: !!S.refList })], { type: 'text/csv' }), base + '_peaks.csv'); break;
       case 'fit':
         if (!S.deconv) return toast('Run Deconvolve (F) first');
         download(new Blob([fitParamsCSV(S.deconv.components.map(c => ({ ...c, label: (S.library.bands.find(b => b.id === c.bandId) || {}).label || c.label })), S.deconv.windows)], { type: 'text/csv' }), base + '_fit.csv');
         break;
-      case 'spectrum': download(new Blob([spectrumCSV(S.processed)], { type: 'text/csv' }), base + '_processed.csv'); break;
+      case 'spectrum': download(new Blob([spectrumCSV(S.processed, { xOffsetCm: S.calibration ? S.calibration.offsetCm : 0 })], { type: 'text/csv' }), base + '_processed.csv'); break;
+      case 'labels': {
+        const entries = S.spectra.filter(o => S.labels.has(o.id)).map(o => ({ spectrum: o, label: S.labels.get(o.id) }));
+        if (!entries.length) return toast('No labelled spectra yet: label one on the Data tab');
+        const ds = labelDataset(entries, {
+          exportedAt: new Date().toISOString(), app: { name: 'Raman Studio' },
+          library: S.library ? { id: S.library.id, commit: S.library.source?.commit || null } : null,
+          laserNm: S.laserNm, calibration: S.calibration,
+        });
+        download(new Blob([JSON.stringify(ds)], { type: 'application/json' }), base + '_labels.json');
+        toast(`Exported ${entries.length} labelled spectr${entries.length === 1 ? 'um' : 'a'}`);
+        break;
+      }
       case 'report': await printReport(); break;
       case 'project': saveProject(); break;
       case 'openproject': $('#projectInput').click(); break;
@@ -755,6 +801,82 @@ async function doExport(kind) {
     toast('Export failed: ' + err.message, { warn: true, ms: 5000 });
   } finally { busy(false); }
 }
+// ------------------------------------------------------------------ Si calibration
+/** Measure the Si band of the active spectrum, on the uncalibrated axis. */
+function siMeasure() {
+  const sp = active(), P = S.processed;
+  if (!sp || !P) return;
+  const off = S.calibration ? S.calibration.offsetCm : 0;
+  try {
+    const x = Float64Array.from(P.x, v => v - off);
+    S.siResult = { spectrumId: sp.id, spectrumName: sp.name, ...measureSiPeak(x, P.despiked || P.raw, S.siWindow) };
+  } catch (err) { S.siResult = null; toast('Si band: ' + err.message, { warn: true, ms: 5000 }); }
+  renderDeck();
+}
+function siApply() {
+  const r = S.siResult, f = $('#deck [data-siapply]');
+  if (!r || !f) return;
+  const nominal = parseFloat(f.elements.nominal.value), source = f.elements.source.value.trim();
+  if (!isFinite(nominal)) return toast('Enter the nominal Si position in cm⁻¹', { warn: true });
+  if (!source) return toast('Enter where the nominal value comes from', { warn: true });
+  setCalibration({
+    offsetCm: nominal - r.x0, measuredCm: r.x0, measuredSe: r.se, fwhmCm: r.w, nominalCm: nominal, nominalSource: source,
+    siSpectrum: r.spectrumName, window: [r.lo, r.hi], appliedAt: new Date().toISOString(),
+  });
+}
+/** Apply (or remove) the session's offset; positions the user set by hand move with the axis. */
+function setCalibration(cal) {
+  const d = (cal ? cal.offsetCm : 0) - (S.calibration ? S.calibration.offsetCm : 0);
+  if (d) {
+    const shift = e => {
+      e.spikeEdits.keep = e.spikeEdits.keep.map(v => v + d);
+      e.spikeEdits.zaps = e.spikeEdits.zaps.map(z => [z[0] + d, z[1] + d]);
+      e.manual.forEach(m => { m.x += d; });
+      e.hidden = e.hidden.map(v => v + d);
+      // detected peaks are keyed by their rounded position
+      e.overrides = Object.fromEntries(Object.entries(e.overrides).map(([k, v]) => [/^a:-?\d+$/.test(k) ? 'a:' + Math.round(+k.slice(2) + d) : k, v]));
+      return e;
+    };
+    Object.assign(S, shift({ spikeEdits: S.spikeEdits, manual: S.manual, hidden: S.hidden, overrides: S.overrides }));
+    for (const lb of S.labels.values()) lb.edits = shift(lb.edits);
+  }
+  S.calibration = cal;
+  if (cal) S.siResult = null;
+  undoStack.length = 0; redoStack.length = 0;   // the history holds positions on the old axis
+  recompute('process');
+  toast(cal ? `Calibration applied: x ${cal.offsetCm >= 0 ? '+' : '−'}${Math.abs(cal.offsetCm).toFixed(2)} cm⁻¹ on every spectrum` : 'Calibration removed');
+}
+function calibrationText() {
+  const c = S.calibration;
+  if (!c) return '';
+  return `x ${c.offsetCm >= 0 ? '+' : '−'}${Math.abs(c.offsetCm).toFixed(2)} cm⁻¹ on every spectrum, from the Si band of "${c.siSpectrum}" `
+    + `(measured ${fmtPm(c.measuredCm, c.measuredSe, 6)} cm⁻¹; nominal ${c.nominalCm} cm⁻¹, source: ${c.nominalSource})`;
+}
+
+// ------------------------------------------------------------------ reviewer labels
+function saveLabel(next) {
+  const sp = active(), P = S.processed, f = $('#deck [data-labelform]');
+  if (!sp || !P || !f) return;
+  const quality = (f.querySelector('input[name=quality]:checked') || {}).value;
+  if (!quality) return toast('Choose a quality grade first', { warn: true });
+  const reviewer = f.elements.reviewer.value.trim();
+  store.set('rs.reviewer', reviewer);
+  S.labels.set(sp.id, {
+    quality, note: f.elements.note.value.trim(), reviewer,
+    checked: { cosmicRays: f.elements.crr.checked, bands: f.elements.bands.checked },
+    savedAt: new Date().toISOString(), settings: clone(S.settings), laserNm: S.laserNm,
+    calibrationOffsetCm: S.calibration ? S.calibration.offsetCm : 0,
+    edits: clone({ spikeEdits: S.spikeEdits, manual: S.manual, hidden: S.hidden, overrides: S.overrides }),
+    snapshot: labelSnapshot(P, S.items, S.spikeEdits),
+  });
+  if (!next) { toast('Label saved'); renderDeck(); return; }
+  const i = S.spectra.findIndex(o => o.id === sp.id);
+  const nxt = S.spectra.slice(i + 1).concat(S.spectra.slice(0, i)).find(o => !S.labels.has(o.id));
+  if (!nxt) { toast('Label saved · every spectrum is labelled'); renderDeck(); return; }
+  setActive(nxt.id, { reveal: false, resetView: false });
+  toast(`Label saved · next: ${nxt.name}`);
+}
+
 function exportMapCSV() {
   const mm = mapModel();
   if (!mm.available) return;
@@ -767,6 +889,7 @@ function csvRows() {
     label: it.sym, kind: it.kind, tier: it.tier, x: it.x, height: it.height, fwhm: it.fwhm, prominence: it.prominence,
     area: it.area, matchScore: it.tier === 'fit' ? null : it.confidence, delta: it.delta, bandId: it.bandId,
     bandName: it.band ? plainText(it.band.name) : it.kind === 'region' ? it.region?.name : '',
+    referenceCandidates: (it.refCands || []).map(c => `${c.material} ${c.position} (${c.delta >= 0 ? '+' : '−'}${Math.abs(c.delta).toFixed(1)})`).join('; '),
   }));
 }
 function settingsText() {
@@ -813,6 +936,7 @@ async function printReport() {
     svg, spectrumName: sp.name, laserNm: S.laserNm, refText: refText(), library: S.library,
     items: S.items.slice().sort((a, b) => a.x - b.x), ratios: S.ratios, workflow: S.workflow, deconv: S.deconv,
     settingsText: settingsText(), dateText: new Date().toLocaleString(), ...acqSummary(),
+    calText: calibrationText(), refListName: S.refList ? `${S.refList.name} (±${S.refList.toleranceCm} cm⁻¹)` : '',
   });
   busy(false);
   await nextFrame();
@@ -826,6 +950,7 @@ function saveProject() {
     laserNm: S.laserNm, libraryId: S.library?.id, settings: S.settings, detect: S.detect, toleranceCm: S.toleranceCm,
     display: S.display, stack: S.stack, activeIndex: S.spectra.findIndex(s => s.id === S.activeId),
     manual: S.manual, hidden: S.hidden, overrides: S.overrides, spikeEdits: S.spikeEdits, ranDeconvolution: !!S.deconv, fitAllBands: S.fitAllBands,
+    calibration: S.calibration, labels: S.spectra.map(s => S.labels.get(s.id) || null),
     spectra: S.spectra.map(s => ({ name: s.name, x: Array.from(s.x), y: Array.from(s.y), xLabel: s.xLabel, xUnit: s.xUnit, yLabel: s.yLabel, source: s.source, meta: s.meta })),
   };
   download(new Blob([JSON.stringify(o)], { type: 'application/json' }), safeName(sp.name) + '.raman-studio.json');
@@ -841,6 +966,9 @@ async function openProject(file) {
     S.toleranceCm = o.toleranceCm ?? null;
     S.display = o.display || 'processed'; S.stack = o.stack || 'single';
     if (o.libraryId) S.library = S.libraries.find(l => l.id === o.libraryId) || S.library;
+    S.calibration = o.calibration || null; S.siResult = null;
+    S.labels = new Map();
+    (o.labels || []).forEach((lb, i) => { if (lb && spectra[i]) S.labels.set(spectra[i].id, lb); });
     setLaser(o.laserNm || 532, { silent: true });
     setActive(spectra[Math.max(0, o.activeIndex || 0)].id, { reveal: true });
     S.manual = o.manual || []; S.hidden = o.hidden || []; S.overrides = o.overrides || {};
@@ -917,6 +1045,15 @@ function wire() {
   $('#dzSampleMono').onclick = () => loadSample('mono');
   $('#fileInput').onchange = e => { loadFiles(e.target.files); e.target.value = ''; };
   $('#projectInput').onchange = e => { if (e.target.files[0]) openProject(e.target.files[0]); e.target.value = ''; };
+  $('#refInput').onchange = async e => {
+    const f = e.target.files[0]; e.target.value = '';
+    if (!f) return;
+    try {
+      S.refList = parseReferenceList(await f.text());
+      analyse(); renderAll();
+      toast(`Reference list "${S.refList.name}": ${S.refList.materials.length} materials, for this session only`);
+    } catch (err) { toast(err.message, { warn: true, ms: 6000 }); }
+  };
   $('#bTheme').onclick = () => setTheme(document.documentElement.dataset.theme === 'light' ? 'dark' : 'light');
   $('#bPresent').onclick = () => togglePresent();
   $('#bHelp').onclick = () => showHelp($('#helpDialog'));
@@ -997,6 +1134,15 @@ function wire() {
       if (act.dataset.action === 'deconvolve') runDeconvolution();
       if (act.dataset.action === 'clearfit') { S.deconv = null; analyse(); renderAll(); }
       if (act.dataset.action === 'mapcsv') exportMapCSV();
+      if (act.dataset.action === 'refload') $('#refInput').click();
+      if (act.dataset.action === 'refclear') { S.refList = null; analyse(); renderAll(); }
+      if (act.dataset.action === 'simeasure') siMeasure();
+      if (act.dataset.action === 'siapply') siApply();
+      if (act.dataset.action === 'siclear') setCalibration(null);
+      if (act.dataset.action === 'labelsave') saveLabel(false);
+      if (act.dataset.action === 'labelnext') saveLabel(true);
+      if (act.dataset.action === 'labeldel') { S.labels.delete(S.activeId); renderDeck(); }
+      if (act.dataset.action === 'labelexport') doExport('labels');
       return;
     }
     const sel = e.target.closest('[data-select]');
@@ -1006,6 +1152,7 @@ function wire() {
     }
   });
   $('#deck').addEventListener('submit', e => {
+    if (e.target.closest('[data-siapply], [data-labelform]')) { e.preventDefault(); return; }   // their buttons act
     const f = e.target.closest('[data-zapform]'); if (!f) return;
     e.preventDefault();
     const lo = parseFloat(f.elements.lo.value), hi = parseFloat(f.elements.hi.value);
@@ -1014,6 +1161,14 @@ function wire() {
   });
   $('#deck').addEventListener('dblclick', e => { const sel = e.target.closest('[data-select]'); if (sel) select(sel.dataset.select, { openBand: true }); });
   $('#deck').addEventListener('change', e => {
+    const rt = e.target.closest('[data-reftol]');
+    if (rt) {
+      const v = parseFloat(rt.value);
+      if (S.refList && v > 0 && v <= 100) { S.refList.toleranceCm = v; analyse(); renderAll(); }
+      return;
+    }
+    const sw = e.target.closest('[data-siwin]');
+    if (sw) { const v = parseFloat(sw.value); if (isFinite(v)) S.siWindow[sw.dataset.siwin] = v; return; }
     const ms = e.target.closest('[data-mapsel]');
     if (ms) {
       const key = ms.dataset.mapsel;

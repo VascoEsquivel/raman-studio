@@ -44,17 +44,40 @@ export function renderPeaks(el, vm) {
     else if (it.height != null) nums.push(`h ${fmt(it.height, 3)}`);
     return `<div class="prow${it.id === vm.selectedId ? ' sel' : ''}" data-select="${esc(it.id)}">
       <span class="ptag ${tagClass(it)}">${esc(it.sym)}</span>
-      <div class="pinfo"><div class="pname">${esc(it.name)}</div><div class="pnums">${nums.join(' · ')}</div></div>
+      <div class="pinfo"><div class="pname">${esc(it.name)}</div><div class="pnums">${nums.join(' · ')}</div>${candLine(it)}</div>
       <div class="pside">${conf != null ? `<span class="pane-meta" title="${SCORE_TIP}">score ${score(it.confidence)}</span><span class="conf" title="${SCORE_TIP}"><i style="width:${conf}%"></i></span>` : `<span class="pane-meta">${esc(it.tierText)}</span>`}
       ${it.tier !== 'fit' ? `<button class="x" data-delete="${esc(it.id)}" title="Remove this peak (Del)">×</button>` : ''}</div>
     </div>`;
   };
   el.innerHTML = `
     <div class="pane-head"><h2 class="pane-title">Detected peaks</h2><span class="pane-meta">${tier1.length} found · ${assigned} assigned</span></div>
+    ${refBox(vm)}
     ${tier1.length ? `<div class="peaklist">${tier1.map(row).join('')}</div>` : `<div class="empty">No peaks above the current sensitivity. Raise <b>Detect</b> sensitivity in the chain below the plot.</div>`}
     ${tier2.length ? `<div class="pane-head" style="margin-top:18px"><h2 class="pane-title">Resolved by deconvolution</h2><span class="pane-meta">${tier2.length} bands</span></div><div class="peaklist">${tier2.map(row).join('')}</div>` : ''}
     <div class="tiers"><span><i></i>detected maximum</span><span><i class="fit"></i>fit-resolved band</span><span><i class="un"></i>unassigned</span></div>
-    <p class="empty" style="padding-top:10px">Double-click the plot to add a peak by hand · <kbd>Del</kbd> removes the selected one · <kbd>[</kbd> <kbd>]</kbd> step through labels.</p>`;
+    <p class="empty" style="padding-top:10px">Double-click the plot to add a peak by hand · <kbd>Del</kbd> removes the selected one · <kbd>[</kbd> <kbd>]</kbd> step through labels.</p>
+    ${vm.refList ? '' : `<p class="empty" style="padding-top:4px"><button class="btn ghost" data-action="refload">Load a reference list…</button> candidate positions for unassigned peaks from your own JSON list, kept in this browser session only.</p>`}`;
+}
+
+/** Candidates from the private reference list for an unassigned peak (position coincidences, not identifications). */
+function candLine(it) {
+  if (!it.refCands || !it.refCands.length) return '';
+  return `<div class="pcand" title="Within the reference list's tolerance of a listed band: a candidate, not an identification">candidates: ${it.refCands.map(c => `${esc(c.material)} ${fmt(c.position, 5)} (Δ ${fmtSigned(c.delta)})`).join(' · ')}</div>`;
+}
+
+/** The loaded reference list: tolerance, and the materials whose listed bands line up with unassigned peaks. */
+function refBox(vm) {
+  const L = vm.refList;
+  if (!L) return '';
+  const rows = L.summary.slice(0, 8).map(m => `<div class="refrow"><b>${esc(m.name)}</b>${m.role ? ` <span class="pane-meta">${esc(m.role)}</span>` : ''}
+    · ${m.matched.length} of ${m.total} listed band${m.total === 1 ? '' : 's'} near a peak (${m.matched.map(q => `${fmt(q.position, 5)} → ${fmtX(q.x)}`).join(', ')})${m.source ? ` · <a href="${esc(m.source.url)}" target="_blank" rel="noopener noreferrer">source</a>` : ''}</div>`).join('');
+  return `<div class="refbox">
+    <div class="refhead"><span><b>${esc(L.name)}</b> · private reference list, ${L.count} materials</span>
+      <label class="mrange">± <input data-reftol type="number" min="0.5" max="100" step="0.5" value="${L.toleranceCm}" aria-label="Candidate tolerance (cm⁻¹)"> cm⁻¹</label>
+      <button class="btn ghost" data-action="refclear">Clear</button></div>
+    <p class="dnote">Unassigned peaks within the tolerance of a listed band show that material as a <b>candidate</b>: a coincidence of position, not an identification; several bands of one material lining up is stronger evidence than one. Loaded for this session only and not saved in projects.${L.note ? ' ' + esc(L.note) : ''}</p>
+    ${rows ? `<div class="reflist">${rows}</div>` : '<div class="okline">No listed band lies within the tolerance of an unassigned peak.</div>'}
+  </div>`;
 }
 
 // ------------------------------------------------------------------ ratios
@@ -336,7 +359,48 @@ export function renderData(el, vm) {
   el.innerHTML = `<div class="pane-head"><h2 class="pane-title">Data</h2><span class="pane-meta">${src || esc(d.name)}</span></div>
     <div class="fitwin"><h4><span>Acquisition</span><span>${d.points} pts · ${fmt(d.x0, 4)}–${fmt(d.x1, 4)} cm⁻¹</span></h4>${acq}</div>
     <div class="fitwin"><h4><span>Quality checks</span><span>${d.flags.filter(f => f.level === 'warn').length || '✓'}</span></h4>${flags}</div>
-    <div class="fitwin"><h4><span>Cosmic-ray removal</span><span>${d.despikeOn ? `${d.spikes.length} removed` : 'off'}</span></h4>${spikes}</div>`;
+    <div class="fitwin"><h4><span>Cosmic-ray removal</span><span>${d.despikeOn ? `${d.spikes.length} removed` : 'off'}</span></h4>${spikes}</div>
+    ${calibrationBox(d)}
+    ${labelBox(d)}`;
+}
+
+const signed = v => `${v >= 0 ? '+' : '−'}${Math.abs(v).toFixed(2)}`;
+
+/** Si offset calibration: what is applied, and measuring a new one in the active spectrum. */
+function calibrationBox(d) {
+  const cal = d.calibration, si = d.si;
+  const now = cal ? `<div class="okline">✓ Every spectrum is shifted by <b class="mono">${signed(cal.offsetCm)} cm⁻¹</b>: Si measured at ${fmtPm(cal.measuredCm, cal.measuredSe, 6)} cm⁻¹ in “${esc(cal.siSpectrum)}”, nominal ${esc(String(cal.nominalCm))} cm⁻¹ (source: ${esc(cal.nominalSource)}).</div>
+      <div style="margin-top:6px"><button class="btn ghost" data-action="siclear">Remove calibration</button></div>` : '';
+  const result = si ? `<div class="kv" style="margin-top:8px"><span>measured centre</span><b>${fmtPm(si.x0, si.se, 6)} cm⁻¹</b><span>FWHM</span><b>${si.w.toFixed(1)} cm⁻¹</b><span>fit</span><b>${si.n} points${isFinite(si.quality) ? ' · ' + si.quality.toFixed(2) + '× noise' : ''}${si.undersampled ? ' · fewer than 4 points across the band' : ''}</b></div>
+      <form class="siapply" data-siapply>
+        <label>Nominal Si position <input name="nominal" type="number" step="any" inputmode="decimal" placeholder="cm⁻¹"></label>
+        <label>Source of that value <input name="source" type="text" placeholder="reference, SOP or certificate"></label>
+        <button class="btn primary" type="button" data-action="siapply">Apply the offset to every spectrum</button></form>` : '';
+  return `<div class="fitwin"><h4><span>Wavenumber calibration (Si)</span><span>${cal ? signed(cal.offsetCm) + ' cm⁻¹' : 'none'}</span></h4>
+    ${now}
+    <p class="dnote">Open a silicon reference spectrum, measure its band here, then enter the nominal position and where it comes from: the app holds no nominal value of its own. The difference is applied to every spectrum of the session as one constant offset, on top of the instrument's own calibration, and recorded in the report, the spectrum CSV and the project. The band is fitted with one pseudo-Voigt over ±20 cm⁻¹ around the highest point of the window, on the uncalibrated axis.</p>
+    <div class="siform"><label class="mrange">Si band between <input data-siwin="lo" type="number" step="any" value="${d.siWindow.lo}" aria-label="Search from (cm⁻¹)"> and <input data-siwin="hi" type="number" step="any" value="${d.siWindow.hi}" aria-label="Search to (cm⁻¹)"> cm⁻¹</label>
+      <button class="btn" data-action="simeasure">Measure in this spectrum</button></div>
+    ${result}</div>`;
+}
+
+/** Reviewer label for the active spectrum (for a labelled dataset). */
+function labelBox(d) {
+  const lb = d.label;
+  return `<div class="fitwin"><h4><span>Reviewer label</span><span>${d.labelled} of ${d.total} labelled</span></h4>
+    <p class="dnote">Builds a labelled dataset: cosmic-ray masks and band assignments confirmed by a person, for checking methods (and any future machine learning) against. Review the removals above and the peak labels, tick what you checked, grade the spectrum and save: the label keeps what you see now, and reopening this spectrum restores your edits.${lb ? ` Saved ${esc(new Date(lb.savedAt).toLocaleString())}.` : ''}</p>
+    <form class="labelform" data-labelform>
+      <div class="lrow"><span class="lk">Quality</span>${d.quality.map(v => `<label class="chk"><input type="radio" name="quality" value="${v}"${lb && lb.quality === v ? ' checked' : ''}> ${v}</label>`).join('')}</div>
+      <div class="lrow"><label class="chk"><input type="checkbox" name="crr"${lb && lb.checked.cosmicRays ? ' checked' : ''}> cosmic-ray removals checked</label>
+        <label class="chk"><input type="checkbox" name="bands"${lb && lb.checked.bands ? ' checked' : ''}> band labels checked</label></div>
+      <textarea name="note" rows="2" placeholder="Note (optional)" aria-label="Note">${esc(lb ? lb.note : '')}</textarea>
+      <div class="lrow"><input name="reviewer" type="text" placeholder="Reviewer (optional)" aria-label="Reviewer" value="${esc(lb ? lb.reviewer : d.reviewer)}">
+        <button class="btn" type="button" data-action="labelsave">Save</button>
+        <button class="btn primary" type="button" data-action="labelnext">Save &amp; next ▸</button>
+        ${lb ? '<button class="btn ghost" type="button" data-action="labeldel">Delete label</button>' : ''}</div>
+    </form>
+    ${d.labelled ? `<div style="margin-top:8px"><button class="btn ghost" data-action="labelexport">Export ${d.labelled} label${d.labelled === 1 ? '' : 's'} (JSON)</button> <span class="pane-meta">raw data included; saved to this computer only</span></div>` : ''}
+  </div>`;
 }
 
 // ------------------------------------------------------------------ map

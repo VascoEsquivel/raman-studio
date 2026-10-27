@@ -158,3 +158,19 @@ test('spectrumCSV: refuses input without x', () => {
   assertThrows(() => spectrumCSV(null), /no x/);
   assertThrows(() => spectrumCSV({}), /no x/);
 });
+
+test('peakTableCSV: reference_candidates column only when asked for', () => {
+  const rows = [{ label: 'unassigned', x: 703, referenceCandidates: 'Material A 700 (+3.0)' }];
+  assertEqual(peakTableCSV(rows).split('\r\n')[0], PEAK_TABLE_COLUMNS.join(','), 'unchanged by default');
+  const lines = peakTableCSV(rows, { referenceCandidates: true }).split('\r\n');
+  assertEqual(lines[0], PEAK_TABLE_COLUMNS.concat(['reference_candidates']).join(','));
+  assert(lines[1].endsWith('Material A 700 (+3.0)'), lines[1]);
+});
+
+test('spectrumCSV: x_uncalibrated column only with a calibration offset', () => {
+  const p = { x: Float64Array.of(101, 102), raw: Float64Array.of(1, 2), baseline: null, corrected: Float64Array.of(1, 2), y: Float64Array.of(1, 2), despiked: Float64Array.of(1, 2) };
+  assertEqual(spectrumCSV(p).split('\r\n')[0], 'x,raw,baseline,corrected,final,despiked');
+  const lines = spectrumCSV(p, { xOffsetCm: 0.5 }).split('\r\n');
+  assertEqual(lines[0], 'x,raw,baseline,corrected,final,despiked,x_uncalibrated');
+  assert(lines[1].startsWith('101,') && lines[1].endsWith(',100.5'), lines[1]);
+});

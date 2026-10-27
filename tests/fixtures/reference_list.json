@@ -1,0 +1,40 @@
+{
+ "schema": "raman-studio/reference-list@1",
+ "id": "synthetic-test",
+ "name": "Synthetic reference list (test)",
+ "toleranceCm": 10,
+ "note": "Made-up positions for tests.",
+ "materials": [
+  {
+   "name": "Synthetic material A",
+   "role": "test",
+   "bands": [
+    700,
+    1100
+   ],
+   "source": {
+    "url": "https://example.org/a",
+    "text": "Source"
+   }
+  },
+  {
+   "name": "Synthetic material B",
+   "role": "test",
+   "bands": [
+    712
+   ],
+   "source": {
+    "url": "https://example.org/b",
+    "text": "Source"
+   }
+  },
+  {
+   "name": "Synthetic material C",
+   "role": "test",
+   "bands": [
+    300
+   ],
+   "source": null
+  }
+ ]
+}

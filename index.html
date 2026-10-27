@@ -50,6 +50,7 @@
             <button role="menuitem" data-export="peaks">Peak table · CSV</button>
             <button role="menuitem" data-export="fit">Fit parameters · CSV</button>
             <button role="menuitem" data-export="spectrum">Processed spectrum · CSV</button>
+            <button role="menuitem" data-export="labels">Reviewer labels · JSON</button>
             <hr>
             <button role="menuitem" data-export="report">Printable report…</button>
             <button role="menuitem" data-export="project">Save project · JSON <kbd>Ctrl S</kbd></button>
@@ -148,6 +149,7 @@
 
 <input type="file" id="fileInput" accept=".csv,.tsv,.txt,.dat,.asc,.xlsx,.xls,.jdx,.dx,.jcamp,.spc,.wdf" multiple hidden>
 <input type="file" id="projectInput" accept=".json" hidden>
+<input type="file" id="refInput" accept=".json,application/json" hidden>
 <noscript><p style="padding:2rem;font:16px system-ui">Raman Studio needs JavaScript.</p></noscript>
 <script type="module" src="js/main.js"></script>
 </body>

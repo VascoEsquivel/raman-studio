@@ -222,6 +222,8 @@ Deconvolution = {
 | `ratios.js` | `computeRatios(prepared, { assignments, peaks, components, laserNm })` → RatioResult[] — one per `library.ratioMap` entry. Heights come from significant fit components when available, else from detected peaks matched to the band; areas only from fit components. I_D/I_G adds the atlas's Cançado crystallite size (Lₐ[nm] = (560/E_l⁴)·(I_D/I_G)⁻¹, E_l from the selected laser) and the G FWHM; I_D/I_D′ reports the nearest atlas reference value (13 / 7 / 3.5). |
 | `workflow.js` | `evaluateWorkflow(prepared, { ratios, components, assignments, peaks, noiseSigma })` → `{ steps: [{ index, html, status: 'match'|'partial'|'no'|'info'|'insufficient', evidence: string[] }], summary }` — walks the atlas's eight steps with the measured numbers. Only numeric criteria the atlas states are used as thresholds (e.g. 2D FWHM < 30 cm⁻¹, I_2D/I_G ≥ 2); anything else is reported as a number for the user to judge. Library-specific: evaluates only for `graphene-go`; other libraries get their steps back as `info`. |
 | `acquisition.js` | `acquisition(meta)` → `{ fields: [{ label, value, key }], laserNm, exposureS, accumulations, cosmicRayRemoval, hasHeader }` from `meta.header` (WiRE's SPC log lines, or the WDF reader's Measurement and Map fields; exposure converted only from WiRE's "Time: <ms>" form; operator and serial numbers are not surfaced). `qualityFlags(spectrum, acq)` → `[{ level: 'warn'|'info', id, text }]`: instrument cosmic-ray removal off (and single accumulation), maximum held over ≥ 3 points (saturation), the 16-bit ceiling, flat segments. Reports only; never changes data. |
+| `calibration.js` | `measureSiPeak(x, y, { lo = 480, hi = 560, halfWidth = 20 })` → `{ x0, se, w, h, g, apexX, n, lo, hi, undersampled, quality }`: one pseudo-Voigt + linear baseline fitted over ±halfWidth around the highest point of [lo, hi]; throws when the window holds no data, too few points or no band. No nominal Si value lives in code: the UI asks for it and its source. |
+| `labels.js` | `LABELS_SCHEMA` (`raman-studio/labels@1`), `QUALITY` (good, usable, reject). `labelSnapshot(processed, items, spikeEdits)` → `{ removedIndices, cosmicRays, kept, zaps, peaks }` (detected and hand-added peaks with label, bandId, kind, origin, override). `labelDataset(entries, ctx)` → the export: per spectrum name, source, map position, raw x and y, quality, note, reviewer, checked flags, settings, calibration offset and the snapshot. |
 | `map.js` | `bandHeight(x, y, lo, hi)` → height of the largest excess over a straight line joining the window edges (each edge the median of its 3 outermost points; WiRE's "signal to baseline"); NaN for fewer than 7 points in the window. `mapValues(spectra, num, den?)` → Float64Array, one value per spectrum; ratios are NaN where the denominator is ≤ `DEN_FLOOR` (0.05) of its largest height in the map. `correlation(a, b)` → `{ r, n }`, Pearson over points where both are finite (r NaN for n < 3 or a constant map). `layout(points)` → `{ xs, ys, nx, ny, cell, dx, dy }` (distinct stage coordinates within 1e-6 of the span; holes allowed). `RAMP` (13-step sequential blue) and `rampColor(t, dark)` (low values recede into the surface in both themes). |
 
 ```js
@@ -234,6 +236,22 @@ RatioResult = {
   extras: { crystalliteSize?: [{ basis: 'height'|'area', valueNm, El, se }], gWidth?, twoDWidth? },
   missing: string[],                       // why parts could not be computed
 }
+```
+
+### match — reference lists (`js/match/reference.js`)
+
+`REFERENCE_SCHEMA` (`raman-studio/reference-list@1`); `parseReferenceList(textOrObject)` →
+`{ id, name, toleranceCm, note, materials: [{ name, role, bands, source: { url, text } | null }] }`
+(throws a user-facing error otherwise; only http(s) source links are kept);
+`candidatesAt(x, list)` → listed bands within the tolerance, nearest first, `delta = x − band`;
+`materialSummary(xs, list)` → per material the bands with a peak within the tolerance, most
+matched first. The UI applies them to unassigned peaks only and calls them candidates. A list
+is loaded by the user for the session (`S.refList`); none ships with the app.
+
+```js
+ReferenceList = { schema: 'raman-studio/reference-list@1', id, name, toleranceCm, note?, private?,
+  source?: { file, sheet, sha256, builtWith },
+  materials: [{ name, role?, bands: number[], source: { url, text } | null }] }
 ```
 
 ## render — `js/render/`
@@ -256,11 +274,12 @@ from the same layout, so PNG/SVG match the screen.
   atlas schematic: `plot.mu/A/sig` → pseudo-Voigt components, fluorescence baseline, Poisson
   noise, a few cosmic-ray spikes) and `synthMonolayer(lib, opts)` (G + sharp 2D, no D, using the
   atlas's monolayer criteria). Both return Spectrum with `meta.synthetic = true`; seeded.
-- `export/csv.js`: `toCSV(headers, rows)` (RFC 4180), `peakTableCSV(rows)` (columns label, kind,
+- `export/csv.js`: `toCSV(headers, rows)` (RFC 4180), `peakTableCSV(rows, { referenceCandidates })` (columns label, kind,
   tier, position_cm-1, height, fwhm_cm-1, prominence, area, match_score, delta_cm-1, band_id,
   band_name; `match_score` is the matcher's distance score, not a probability),
-  `fitParamsCSV(components, windows)`, `spectrumCSV(processed)` (x, raw, baseline, corrected,
-  final, despiked).
+  `fitParamsCSV(components, windows)`, `spectrumCSV(processed, { xOffsetCm })` (x, raw, baseline, corrected,
+  final, despiked). Optional last columns: `reference_candidates` when a reference list is loaded,
+  `x_uncalibrated` when a calibration offset is applied.
 - UI (`main.js`, `ui/panels.js`): the **Data** tab renders acquisition fields, quality flags and
   the despike lists (`spikes` with Keep, `restored`, `suspects` with Remove, a zap form).
   Keeps and zaps live in `S.spikeEdits` per active spectrum, go through undo/redo, project files
@@ -272,6 +291,13 @@ from the same layout, so PNG/SVG match the screen.
   selected band window, an optional ratio band and an optional comparison band, each a library
   band or a custom range (`S.map`). Clicking a cell or scatter dot makes that spectrum active;
   `exportMapCSV()` writes point, x, y, value[, compared value].
+- Calibration (`S.calibration`): `pipelineFor()` processes every spectrum on `x + offsetCm`
+  (`calibrated()`); the Si band is measured on the uncalibrated axis. Changing the offset moves
+  hand-set positions (keeps, zaps, manual and hidden peaks, override keys) with the axis, clears
+  undo, and is saved in projects.
+- Labels (`S.labels`, spectrum id → label): saved from the Data tab with a `labelSnapshot`, the
+  reviewer's edits (restored by `setActive`), settings and the calibration offset at save time;
+  saved in projects by spectrum index and exported with `labelDataset`.
 
 ## Band libraries
 

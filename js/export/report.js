@@ -8,6 +8,14 @@ import { esc, fmt, fmtPm, fmtX, fmtSigned, richText } from '../ui/dom.js';
  * @param {object} r  { svg, spectrumName, laserNm, refText, library, items, ratios, workflow, deconv, settingsText, dateText,
  *   acqText?, qualityText? }
  */
+/** Reference-list candidates for unassigned peaks, when a private list was loaded. */
+function candText(r) {
+  if (!r.refListName) return '';
+  const rows = (r.items || []).filter(it => it.tier !== 'fit' && it.refCands && it.refCands.length)
+    .map(it => `${fmtX(it.x)} → ${it.refCands.map(c => `${esc(c.material)} ${fmt(c.position, 5)} (${fmtSigned(c.delta)})`).join(', ')}`);
+  return `Reference-list candidates (${esc(r.refListName)}; position coincidences, not identifications): ${rows.length ? rows.join('; ') : 'none'}.<br>`;
+}
+
 export function fillReport(el, r) {
   const lib = r.library;
   // One row per band: detected position/match score merged with the fitted
@@ -66,7 +74,7 @@ export function fillReport(el, r) {
       </div>
     </section>
     <footer class="rp-foot">
-      ${r.acqText ? `Acquisition: ${esc(r.acqText)}.<br>` : ''}${r.qualityText ? `Quality: ${esc(r.qualityText)}<br>` : ''}Processing: ${esc(r.settingsText)}. Deconvolution: ${esc(fitLine)}.<br>
+      ${r.acqText ? `Acquisition: ${esc(r.acqText)}.<br>` : ''}${r.calText ? `Wavenumber calibration: ${esc(r.calText)}.<br>` : ''}${candText(r)}${r.qualityText ? `Quality: ${esc(r.qualityText)}<br>` : ''}Processing: ${esc(r.settingsText)}. Deconvolution: ${esc(fitLine)}.<br>
       Match: the position score of a detected peak in its atlas window (1 at the band centre, about 0.14 at the window edge), a distance measure, not a probability.<br>
       Ratio ± values: fit-model standard uncertainty (1σ, from the fit covariance); noise for the fitted bands only, not the choice of bands or baseline, and not a probability.<br>
       Band assignments from the Raman graphene / graphene-oxide atlas (${esc(lib.source?.url || '')}${lib.source?.commit ? ', commit ' + esc(lib.source.commit.slice(0, 7)) : ''}). Atlas positions assume ${esc(r.refText)}.

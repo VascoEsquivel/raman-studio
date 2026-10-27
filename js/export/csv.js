@@ -97,10 +97,13 @@ function pick(o, ...keys) {
  * Columns: label, kind, tier, position_cm-1, height, fwhm_cm-1, prominence, area,
  * match_score, delta_cm-1, band_id, band_name. match_score is the matcher's position score
  * (1 at the atlas centre, ≈0.14 at the window edge): a distance measure, not a probability.
+ * With `referenceCandidates`, a last column reference_candidates holds each row's
+ * `referenceCandidates` text (candidates from a private reference list, not identifications).
  * @param {object[]} rows
+ * @param {{referenceCandidates?:boolean}} [opts]
  * @returns {string}
  */
-export function peakTableCSV(rows) {
+export function peakTableCSV(rows, { referenceCandidates = false } = {}) {
   const out = (rows || []).map(r => [
     pick(r, 'label'),
     pick(r, 'kind'),
@@ -114,8 +117,8 @@ export function peakTableCSV(rows) {
     pick(r, 'delta', 'delta_cm-1'),
     pick(r, 'bandId', 'band_id'),
     pick(r, 'bandName', 'band_name'),
-  ]);
-  return toCSV(PEAK_TABLE_COLUMNS, out);
+  ].concat(referenceCandidates ? [pick(r, 'referenceCandidates', 'reference_candidates')] : []));
+  return toCSV(referenceCandidates ? PEAK_TABLE_COLUMNS.concat(['reference_candidates']) : PEAK_TABLE_COLUMNS, out);
 }
 
 /** Standard error from a FitComponent's `se`, or null when locked / absent. */
@@ -170,14 +173,19 @@ export function fitParamsCSV(components, windows) {
  * Processed spectrum as CSV: x, raw, baseline, corrected, final (Processed.y).
  * The baseline column is always present so the layout is the same for every
  * export; its cells are empty when no baseline was subtracted (baseline null).
+ * With a calibration offset, a last column x_uncalibrated holds x − offset (x is calibrated).
  * @param {object} processed pipeline result ({ x, raw, baseline, corrected, y })
+ * @param {{xOffsetCm?:number}} [opts]
  * @returns {string}
  */
-export function spectrumCSV(processed) {
+export function spectrumCSV(processed, { xOffsetCm = 0 } = {}) {
   if (!processed || !processed.x) throw new Error('Nothing to export: the spectrum has no x values.');
   const { x, raw, baseline, corrected, y, despiked } = processed;
   const at = (arr, i) => (arr && i < arr.length ? arr[i] : null);
   const rows = new Array(x.length);
-  for (let i = 0; i < x.length; i++) rows[i] = [x[i], at(raw, i), at(baseline, i), at(corrected, i), at(y, i), at(despiked, i)];
-  return toCSV(SPECTRUM_COLUMNS, rows);
+  for (let i = 0; i < x.length; i++) {
+    rows[i] = [x[i], at(raw, i), at(baseline, i), at(corrected, i), at(y, i), at(despiked, i)];
+    if (xOffsetCm) rows[i].push(x[i] - xOffsetCm);
+  }
+  return toCSV(xOffsetCm ? SPECTRUM_COLUMNS.concat(['x_uncalibrated']) : SPECTRUM_COLUMNS, rows);
 }

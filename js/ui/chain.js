@@ -69,7 +69,7 @@ export class Chain {
       if (modEl) modEl.classList.toggle('off', !on);
     };
     const st = m.stats || {};
-    set('raw', st.points ? `${st.points} pts` : '—');
+    set('raw', st.points ? `${st.points} pts${st.offset ? ` · x ${st.offset > 0 ? '+' : '−'}${Math.abs(st.offset).toFixed(2)}` : ''}` : '—');
     led('despike', s.despike.on);
     set('despike', s.despike.on ? `<span class="stat">${st.spikes ?? 0}</span> removed${st.suspects ? ` · ${st.suspects} to check` : ''}` : 'off');
     led('baseline', s.baseline.on);

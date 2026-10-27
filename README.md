@@ -46,7 +46,11 @@ app is static files on GitHub Pages: no server, no account, no build step.
 4. **Label.** Each peak is matched to the atlas band whose window contains it, with
    a match score that falls off with distance from the atlas centre (1 at the
    centre, about 0.14 at the window edge; a distance measure, not a probability):
-   - Unmatched peaks stay on the plot as **unassigned**.
+   - Unmatched peaks stay on the plot as **unassigned**. Load a reference list of
+     your own (a JSON file, see below) from the Peaks tab and each unassigned peak
+     lists the materials with a band within its tolerance: *candidates*, a
+     coincidence of position, not an identification. The list stays in the
+     browser session; it is not part of the app and not saved in projects.
    - Peaks in the 2850–2920 cm⁻¹ window are tagged **sp³ C–H**, which the atlas
      says is not a lattice band.
    - Pick the excitation laser (532 / 633 / 785 nm). D and 2D windows shift with
@@ -84,9 +88,25 @@ app is static files on GitHub Pages: no server, no account, no build step.
      `despiked` columns).
    - The map values as CSV: point, stage x and y, the mapped value and the
      compared band.
+   - Reviewer labels as JSON (see **Label** below), with the raw data, saved to
+     your computer only.
    - A one-page printable report: figure, tables, ratios and interpretation.
    - A project JSON (<kbd>Ctrl</kbd>+<kbd>S</kbd>) that reopens exactly where you
      left off.
+
+**Calibrate** the wavenumber axis from the Data tab: open a silicon reference
+spectrum, measure its band, and enter the nominal position with its source (the
+app holds no nominal value of its own). The difference is applied to every
+spectrum of the session as one constant offset, shown on the chain's Raw module
+and recorded in the report, the spectrum CSV (`x_uncalibrated` column) and the
+project.
+
+**Label** spectra for a reviewed dataset, also on the Data tab: check the
+cosmic-ray removals and the peak labels, grade the spectrum (good / usable /
+reject), and *Save & next* moves to the next unlabelled one. Each label keeps a
+snapshot of the mask and the assignments you confirmed; reopening the spectrum
+restores your edits. Labels are saved in projects and exported as
+`raman-studio/labels@1` JSON.
 
 **Presentation mode** (<kbd>P</kbd>) goes fullscreen with large type and projector
 contrast. <kbd>←</kbd> <kbd>→</kbd> step through the labels with a caption for each band.
@@ -178,6 +198,8 @@ python tools/check_app.py --url https://vascoesquivel.github.io/raman-studio/   
 Lab files for local testing go in `test-data/private/`, which is gitignored.
 `python tools/lab_harness.py` compares the app's fits there with the lab's own WiRE
 curve fits (`*_curvefit.wdf`) and keeps its results in the same private folder.
+`python tools/build_reference_list.py WORKBOOK.xlsx` turns a reference-peaks workbook
+into a reference list for the Peaks tab; it writes only inside `test-data/private/`.
 Module contracts are in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ## Credits
@@ -262,6 +284,19 @@ Module contracts are in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
   place and listed under "Worth a look". The method was checked on six real
   WiRE maps and six point spectra (private lab data, not published) as well as
   on synthetic stress cases; it is not a guarantee, so review the list.
+- **Reference-list candidates are positions, nothing more.** A candidate means a
+  detected, unassigned peak lies within the list's tolerance (shown and
+  adjustable on the Peaks tab) of a band the list gives for that material. It
+  says nothing about intensities, widths or other bands of the material, and a
+  material whose other bands are missing is weak evidence. Lists are only as
+  good as their sources: the app shows each material's source link and never
+  ships a list of its own.
+- **Calibration is a single offset.** It corrects a constant shift of the axis,
+  as the Si procedure does, not a stretch across the range, and it sits on top
+  of whatever calibration the instrument software applied. The Si band is
+  fitted with one pseudo-Voigt over ±20 cm⁻¹ around the highest point of the
+  search window; on a coarse grid (fewer than 4 points across the band) the Data
+  tab says so.
 - **Multiple spectra** are compared visually (overlay or stacked). Processing,
   labels, ratios and exports apply to the spectrum currently selected; there is
   no batch export yet.

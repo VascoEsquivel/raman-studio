@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -77,6 +78,12 @@ class Checker:
 
     def shot(self, name):
         self.page.screenshot(path=str(self.out / f"{name}.png"))
+
+
+def number_after(text: str, label: str) -> float:
+    """The first decimal number after `label` in `text` (a typographic minus counts), or NaN."""
+    m = re.search(re.escape(label) + r"\D{0,12}?([+−-]?\d+\.\d+)", text)
+    return float(m.group(1).replace("−", "-")) if m else float("nan")
 
 
 def expect_bands(c: Checker, tag, wanted):
@@ -289,6 +296,75 @@ def main() -> int:
                 page.click("#paneMap [data-action=mapcsv]")
             rows = Path(dl.value.path()).read_text(encoding="utf-8").strip().splitlines()
             c.check(len(rows) == 7 and rows[0].startswith("point,"), f"map CSV: header and one row per point (got {len(rows)} lines)")
+
+            # ---------------- reviewer labels on the map
+            page.click(".deck-tabs [data-tab=data]"); c.settle(300)
+            first = page.evaluate("document.querySelector('#spectrumSwitch')?.textContent || ''")
+            page.check("#paneData [data-labelform] input[name=quality][value=good]")
+            page.check("#paneData [data-labelform] input[name=crr]")
+            page.click("#paneData [data-action=labelnext]"); c.settle(1200)
+            meta = page.inner_text("#paneData .fitwin:last-of-type h4")
+            c.check("1 of 6 labelled" in meta.lower(), f"labels: one of six labelled ({meta!r})")
+            second = page.evaluate("document.querySelector('#spectrumSwitch')?.textContent || ''")
+            c.check(second != first, "labels: Save & next opens the next unlabelled spectrum")
+            with page.expect_download() as dl:
+                page.click("#paneData [data-action=labelexport]")
+            ds = json.loads(Path(dl.value.path()).read_text(encoding="utf-8"))
+            c.check(ds.get("schema") == "raman-studio/labels@1" and len(ds["spectra"]) == 1 and ds["spectra"][0]["quality"] == "good"
+                    and len(ds["spectra"][0]["x"]) == len(ds["spectra"][0]["y"]) > 0, "labels: dataset exported with raw data and the grade")
+            c.shot("15_labels")
+
+            # ---------------- reference list: candidates for an unassigned peak
+            print("reference list")
+            page.goto(base)
+            page.wait_for_selector("#dropzone:not([hidden])")
+            page.set_input_files("#fileInput", str(FIX / "ref_candidates.csv"))
+            page.wait_for_function("document.querySelector('#dropzone').hidden", timeout=15000)
+            c.settle(1500)
+            page.click(".deck-tabs [data-tab=peaks]"); c.settle(300)
+            c.check(page.query_selector("#paneData") is not None and page.query_selector("#panePeaks [data-action=refload]") is not None, "peaks pane offers to load a reference list")
+            page.set_input_files("#refInput", str(FIX / "reference_list.json")); c.settle(800)
+            cand = page.inner_text("#panePeaks .pcand") if page.query_selector("#panePeaks .pcand") else ""
+            c.check("Synthetic material A" in cand and "Synthetic material B" in cand, f"unassigned 703 peak lists both candidates ({cand!r})")
+            box = page.inner_text("#panePeaks .refbox")
+            c.check("not an identification" in box and "1 of 2" in box, "reference box: wording and per-material count")
+            page.fill("#panePeaks [data-reftol]", "5"); page.dispatch_event("#panePeaks [data-reftol]", "change"); c.settle(500)
+            cand = page.inner_text("#panePeaks .pcand") if page.query_selector("#panePeaks .pcand") else ""
+            c.check("Synthetic material A" in cand and "Synthetic material B" not in cand, f"tolerance 5 cm⁻¹ keeps only the nearer candidate ({cand!r})")
+            c.shot("16_reference_list")
+            c.assert_layout("reference list")
+
+            # ---------------- Si calibration
+            print("Si calibration")
+            page.goto(base)
+            page.wait_for_selector("#dropzone:not([hidden])")
+            page.set_input_files("#fileInput", str(FIX / "si_reference.csv"))
+            page.wait_for_function("document.querySelector('#dropzone').hidden", timeout=15000)
+            c.settle(1500)
+            page.click(".deck-tabs [data-tab=data]"); c.settle(300)
+            page.click("#paneData [data-action=simeasure]"); c.settle(500)
+            grab = number_after
+            meas = page.inner_text("#paneData .fitwin:nth-last-of-type(2) .kv") if page.query_selector("#paneData .fitwin:nth-last-of-type(2) .kv") else ""
+            m1 = grab(meas, "measured centre")
+            c.check(abs(m1 - 519.0) < 0.05, f"Si band measured at the synthetic centre ({meas[:60]!r})")
+            page.fill("#paneData [data-siapply] input[name=nominal]", "520")
+            page.fill("#paneData [data-siapply] input[name=source]", "test value")
+            page.click("#paneData [data-action=siapply]"); c.settle(1200)
+            raw = page.evaluate("document.querySelector('[data-val=raw]')?.textContent || ''")
+            c.check(abs(grab(raw, "x") - (520 - m1)) < 0.011, f"chain shows the applied offset ({raw!r}, measured {m1})")
+            pane = page.inner_text("#paneData")
+            c.check(abs(grab(pane, "shifted by") - (520 - m1)) < 0.011 and "test value" in pane, "data pane records the offset and its source")
+            with page.expect_download() as dl:
+                page.click("#bExport"); page.click("#exportMenu [data-export=spectrum]")
+            head = Path(dl.value.path()).read_text(encoding="utf-8").splitlines()[0]
+            c.check(head.strip().endswith("x_uncalibrated"), f"spectrum CSV carries the uncalibrated axis ({head.strip()!r})")
+            page.click("#paneData [data-action=simeasure]"); c.settle(500)
+            meas2 = page.inner_text("#paneData .fitwin:nth-last-of-type(2) .kv") if page.query_selector("#paneData .fitwin:nth-last-of-type(2) .kv") else ""
+            c.check(abs(grab(meas2, "measured centre") - m1) < 0.011, f"measuring again after calibrating reads the uncalibrated axis ({meas2[:60]!r})")
+            c.shot("17_si_calibration")
+            page.click("#paneData [data-action=siclear]"); c.settle(800)
+            raw = page.evaluate("document.querySelector('[data-val=raw]')?.textContent || ''")
+            c.check("x " not in raw, f"removing the calibration restores the axis ({raw!r})")
 
             # ---------------- fixtures
             fixtures = sorted(f for f in FIX.iterdir() if f.suffix.lower() in
