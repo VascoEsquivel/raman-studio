@@ -134,6 +134,16 @@ def main() -> int:
             c.check(len(fit_labels) >= 1, f"GO deconvolved: fit-resolved (dashed) labels present (got {len(fit_labels)})")
             q = page.evaluate("[...document.querySelectorAll('#paneFit .quality .v')].map(e => parseFloat(e.textContent))")
             c.check(all(v == v and v < 3 for v in q) and q, f"GO deconvolved: fit quality < 3× noise in every window ({q})")
+            sel = page.inner_text("#paneFit .selline") if page.query_selector("#paneFit .selline") else ""
+            c.check("Band set chosen by BIC" in sel, f"fit pane names the band set chosen by BIC ({sel[:80]!r})")
+            sets = len(page.query_selector_all("#paneFit .selsets tbody tr"))
+            c.check(sets == 8, f"fit pane lists every candidate band set ({sets})")
+            page.click("#paneFit [data-opt=fitAllBands]")
+            page.wait_for_function("!document.querySelector('#paneFit .selline') && document.querySelector('#paneFit [data-opt=fitAllBands]')?.checked", timeout=20000)
+            c.check(True, "fit every band: re-fits without model selection")
+            page.click("#paneFit [data-opt=fitAllBands]")
+            page.wait_for_selector("#paneFit .selline", timeout=20000)
+            c.settle(400)
 
             # click a label → band pane
             first = page.query_selector("#plotHost g.lbl:not(.overflow) rect.box")
@@ -145,6 +155,9 @@ def main() -> int:
             # ratios + read panes
             page.click(".deck-tabs [data-tab=ratios]"); c.settle(300); c.shot("04_ratios")
             c.check(page.query_selector_all("#paneRatios .rcard").__len__() == 5, "ratios pane shows the five atlas ratio cards")
+            idg = page.inner_text("#paneRatios .rcard .rval .v")
+            c.check("±" in idg, f"fitted I_D/I_G carries a fit-model uncertainty ({idg!r})")
+            c.check("not a probability" in page.inner_text("#paneRatios .source-note"), "ratios pane explains what ± means")
             page.click(".deck-tabs [data-tab=read]"); c.settle(300); c.shot("05_read")
             c.check(page.query_selector_all("#paneRead .step").__len__() == 8, "read pane shows the eight atlas workflow steps")
 

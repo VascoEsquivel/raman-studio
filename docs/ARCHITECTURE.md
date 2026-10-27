@@ -188,7 +188,8 @@ band (confidence > 0) appears in `alternatives`.
 |---|---|
 | `profile.js` | PeakForge's WiRE-compatible linear pseudo-Voigt, **unchanged**: `FOURLN2`, `GAREA`, `LAREA`, `peakY(p, x)`, `peakArea(p)`, `peakType(p)` with `p = { x0, w, h, g }` (g = % Gaussian). Do not "upgrade" to a true Voigt — comparability with the instrument software is the point (regression: PeakForge's Curve 1 → area 225343). |
 | `lm.js` | PeakForge's Levenberg–Marquardt, decoupled from global state but algorithmically identical (scale-based steps, inward finite differences at bounds, step clamp, λ schedule, χ²ᵣ·(JᵀJ)⁻¹ uncertainties, windowed fit quality). `fitPeaks({ x, y, peaks, baseline, weighting = 'unit', maxIter = 200 })` → FitResult; `evaluateModel(peaks, baseline, x)`; `fitQuality(x, y, model)`; `estimateNoise(y)` |
-| `deconvolve.js` | `deconvolve(x, y, preparedBands, { fitDefaults, weighting = 'unit', maxIter = 300 })` → Deconvolution — seeds one component per atlas band (atlas centre, `fwhmSeed`, height from the data), bounds centres to the band window and widths to `[fwhmMin, fwhmMax]`, heights ≥ 0, fits first- and second-order regions separately with a linear local baseline. |
+| `deconvolve.js` | `deconvolve(x, y, preparedBands, { fitDefaults, weighting = 'unit', maxIter = 300, select = true })` → Deconvolution — seeds one component per atlas band (atlas centre, `fwhmSeed`, height from the data), bounds centres to the band window and widths to `[fwhmMin, fwhmMax]`, heights ≥ 0, fits first- and second-order regions separately with a linear local baseline. With `fitDefaults.modelSelection` (`{ criterion: 'BIC', optional, closeCall }`) and `select`, every subset of a window's optional bands is fitted on the window the full set defines, and the lowest BIC = n·ln(χ²/n) + k·ln n wins (k = free parameters, χ² weighted). Left-out bands go to `skipped` with `selection: true` and the BIC cost of adding each back. |
+| `uncertainty.js` | `ratioUncertainty(deconv, num, den, measure = 'height'\|'area')` → 1σ of num/den (or null) by first-order propagation through the window covariance; area gradient from the analytic pseudo-Voigt area. `covarianceOf(deconv, a, ka, b, kb)` → covariance of two component parameters (0 across windows or for a fixed parameter; null when the window's matrix is singular). A *fit-model standard uncertainty*: noise for the fitted model only, not model choice, and not a probability. |
 
 ```js
 // fitPeaks input
@@ -202,11 +203,14 @@ FitResult = {
   undersampled: number[],      // peak indices with < 4 points across the FWHM
   insignificant: number[],     // |h| < 2σ_h
   residual: Float64Array,      // y − model at the data x
+  covariance,                  // { params: [{ peak, k }], matrix } = χ²ᵣ·(JᵀJ)⁻¹ over free parameters (peak −1: baseline), or null
 }
 Deconvolution = {
-  windows: [{ lo, hi, bandIds, stats, baseline, residual: { x, r } }],
+  windows: [{ lo, hi, bandIds, stats, baseline, residual: { x, r }, covariance,      // covariance params keyed { bandId, k }
+    selection }],              // null, or { criterion, optional, kept, closeCall, models: [{ kept, n, k, bic, dBic }] best first,
+                               //   runnerUp: { kept, dBic, components } when the next-best is within closeCall }
   components: FitComponent[],
-  skipped: [{ bandId, reason }],
+  skipped: [{ bandId, reason, selection? }],   // selection: true = left out by model selection
   model(x) → number,           // NaN outside fitted windows
 }
 ```
@@ -224,10 +228,10 @@ Deconvolution = {
 RatioResult = {
   ratioIndex, name, title,                 // atlas ratio card n / t (verbatim)
   num, den,                                // band ids
-  height: { value, source: 'fit'|'detected', numValue, denValue } | null,
-  area:   { value, numValue, denValue } | null,
+  height: { value, source: 'fit'|'detected', numValue, denValue, se } | null,   // se: fit-model 1σ, null for detected
+  area:   { value, numValue, denValue, se } | null,
   classify?: { nearest, label, value },    // I_D / I_D′ only
-  extras: { crystalliteSize?: [{ basis: 'height'|'area', valueNm, El }], gWidth?, twoDWidth? },
+  extras: { crystalliteSize?: [{ basis: 'height'|'area', valueNm, El, se }], gWidth?, twoDWidth? },
   missing: string[],                       // why parts could not be computed
 }
 ```

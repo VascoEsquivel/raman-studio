@@ -4,7 +4,7 @@ Drop in a Raman spectrum (Excel, CSV, TXT, JCAMP-DX, SPC or Renishaw WDF, whatev
 instrument exports) and see it immediately, cleaned up, with every peak labelled from the
 [Raman graphene / graphene-oxide atlas](https://vascoesquivel.github.io/raman-graphene-atlas/).
 Click a label to read what the band means, get the atlas intensity ratios from your own
-numbers, and resolve the shoulders hidden inside broad GO bands with a nine-band fit.
+numbers, and resolve the shoulders hidden inside broad GO bands with an atlas band fit.
 
 **Live:** https://vascoesquivel.github.io/raman-studio/
 · try it with no file: [graphene-oxide sample](https://vascoesquivel.github.io/raman-studio/?sample=go),
@@ -52,7 +52,12 @@ app is static files on GitHub Pages: no server, no account, no build step.
    - Pick the excitation laser (532 / 633 / 785 nm). D and 2D windows shift with
      it at the atlas rates (~50 and ~100 cm⁻¹/eV).
 5. **Deconvolve** (<kbd>F</kbd>). This seeds PeakForge's Levenberg–Marquardt fitter
-   with the atlas nine-band model and fits the first- and second-order regions.
+   with the atlas bands and fits the first- and second-order regions. In the
+   first-order region D and G are always fitted, while D*, D″ and D′ are kept only
+   in the band set with the lowest BIC (Bayesian information criterion), so a
+   shoulder the data cannot support does not leave G "not significant". The Fit
+   tab names the chosen set, lists every set tried, and shows a runner-up within
+   ΔBIC 2 (with its ratios on the Ratios tab). *Fit every band* turns selection off.
    Bands it resolves get dashed callouts, so you can tell them apart from the
    solid callouts of detected maxima. The Fit tab shows residuals, fit quality
    against the noise floor, uncertainties and degeneracy warnings.
@@ -60,7 +65,8 @@ app is static files on GitHub Pages: no server, no account, no build step.
    - Click any label to see the band's vibrational origin, scattering process,
      diagnostic use and references, all taken from the atlas.
    - **Ratios** computes the atlas ratio guide (height and area versions), with
-     the Cançado crystallite size and Eckmann defect class.
+     the Cançado crystallite size and Eckmann defect class. Ratios from a fit
+     carry a ± fit-model standard uncertainty.
    - **Read** walks the atlas's "read your own spectrum" steps using your numbers.
    - **Map** appears for a Renishaw map (`.wdf`). It draws a band-intensity heat
      map: one band's height, or the ratio of two, at every map point. Click a
@@ -170,6 +176,8 @@ python tools/check_app.py --url https://vascoesquivel.github.io/raman-studio/   
 ```
 
 Lab files for local testing go in `test-data/private/`, which is gitignored.
+`python tools/lab_harness.py` compares the app's fits there with the lab's own WiRE
+curve fits (`*_curvefit.wdf`) and keeps its results in the same private folder.
 Module contracts are in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ## Credits
@@ -197,15 +205,29 @@ Module contracts are in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 - **Overlapped bands are not uniquely determined.** In GO, D′ under G and D″
   between D and G are often degenerate with their neighbours. The Fit tab flags
   them (not significant, or a near-degenerate pair) rather than hiding the
-  problem. The fit always uses the fixed nine-band model with schematic seed
-  widths, stops at 300 iterations, and runs on the main thread (about 0.5 s for
-  a typical spectrum, longer for very dense data).
+  problem. Seed widths are the atlas's schematic ones, each fit stops at 300
+  iterations, and everything runs on the main thread: with model selection the
+  first-order region is fitted 8 times, about 1 s for a typical spectrum.
+- **Model selection weighs fit against parameters; it does not prove a band is
+  there or not.** BIC (Schwarz 1978) assumes independent noise, while real
+  residuals also carry baseline and line-shape misfit, which pushes any criterion
+  towards more bands; BIC's larger penalty was chosen partly for that. Only D*,
+  D″ and D′ are optional, the second-order region always fits its four bands, and
+  bands the atlas does not define (such as broad bands a lab fit may add) are
+  never offered. The choice was checked against the lab's own WiRE curve fits
+  (private data, not published).
 - **The automatic reading is a guide, not a verdict.** Only numeric thresholds
   the atlas states are applied, such as 2D FWHM < 30 cm⁻¹ and I_2D/I_G ≥ 2.
   "Strong D", "little D" and "broad" have no atlas numbers, so the app shows the
   measured values for you to judge. It also doesn't count 2D components (to tell
   a monolayer from a bilayer). The evaluation is written for the graphene
   library only.
+- **A ratio's ± covers noise, not the model.** It is the 1σ fit-model standard
+  uncertainty from the fit's covariance: how much the ratio would scatter under
+  repeated noise for the bands and line shapes that were fitted. Which bands go
+  into the fit, their line shapes and the baseline can move a ratio further
+  than its ± suggests, which is why a close runner-up band set is shown with its
+  own ratios. It is not a probability. Ratios from detected peak heights have no ±.
 - **The match score is a distance score, not a probability.** It is
   exp(−2(d/d_max)²) of the distance from the atlas centre within the match
   window, shown as a number (never a percentage) and exported as `match_score`.
@@ -216,13 +238,12 @@ Module contracts are in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
   reader value for value on twelve real WiRE 5.6 files (point spectra and an
   88-point map); other WiRE versions have not been checked. Wavelength (nm)
   x-axes are not converted to Raman shift.
-- **WiRE's SPC export is not the same data as the WDF it came from.** For one
-  point spectrum saved both ways, the SPC was resampled onto an even 2.50 cm⁻¹
-  grid (the WDF's own axis spacing runs from 2.08 to 3.01 cm⁻¹) and its
-  intensities were 70–170 counts higher (median 148). Band positions agreed
-  within 0.2 cm⁻¹ at D and G. The cause of the offset is not known. When both
-  exist, open the WDF, and compare absolute intensities only between files of
-  the same kind.
+- **WiRE's SPC export is not the same data as the WDF it came from.** In a
+  point spectrum saved both ways, the SPC had been resampled onto an evenly
+  spaced axis (the WDF keeps the instrument's own, uneven one) and its
+  intensities carried an offset of unknown cause, while band positions agreed
+  closely. When both exist, open the WDF, and compare absolute intensities only
+  between files of the same kind.
 - **Band maps are simple heights.** A map cell is the band's height above a
   straight line across its window (WiRE's "signal to baseline"), not a fitted
   area, so overlapping bands (D′ under G) add into each other. A ratio cell is

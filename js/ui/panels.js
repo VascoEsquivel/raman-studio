@@ -2,7 +2,7 @@
 // and the atlas band explainer. Pure render functions over a view model built
 // in main.js; event handling is delegated by main.js via data-* attributes.
 
-import { esc, fmt, fmtX, fmtSigned, richText, plainText } from './dom.js';
+import { esc, fmt, fmtPm, fmtX, fmtSigned, richText, plainText } from './dom.js';
 import { peakType } from '../fit/profile.js';
 import { RAMP, rampColor } from '../analysis/map.js';
 
@@ -58,18 +58,37 @@ export function renderPeaks(el, vm) {
 }
 
 // ------------------------------------------------------------------ ratios
+/** The same ratio from the runner-up band set, when it scored within the close-call margin. */
+function runnerUpLine(vm, r) {
+  const ru = vm.runnerUp;
+  const q = ru && ru.ratios.find(x => x.ratioIndex === r.ratioIndex);
+  if (!q || !(q.height?.source === 'fit' || q.area)) return '';
+  const parts = [q.height?.source === 'fit' ? `height ${fmt(q.height.value, 3)}` : '', q.area ? `area ${fmt(q.area.value, 3)}` : ''].filter(Boolean);
+  const same = (r.height?.source === 'fit' && q.height?.source === 'fit' && Math.abs(q.height.value - r.height.value) < 1e-9 * Math.abs(r.height.value || 1));
+  return same ? '' : `<div class="rrun">Runner-up band set (ΔBIC +${fmt(ru.dBic, 2)}, ${esc(bandSetName(vm, ru.kept))}): ${parts.join(' · ')}</div>`;
+}
+
+/** "D*, D″ kept" / "no optional band" for a selection's kept list. */
+function bandSetName(vm, kept) {
+  const lab = id => (vm.library.bands.find(b => b.id === id) || {}).label || id;
+  return kept.length ? `with ${kept.map(lab).join(', ')}` : 'no optional band';
+}
+
 export function renderRatios(el, vm) {
   if (!vm.hasData) { el.innerHTML = `<div class="empty">Ratios appear once a spectrum is loaded.</div>`; return; }
   const lib = vm.library;
+  const PM_TIP = 'Fit-model standard uncertainty (1σ) from the fit covariance: noise for these fitted bands and line shapes only, not the choice of bands or baseline. Not a probability.';
+  let anyPm = false;
+  const pm = q => { if (q.se != null && isFinite(q.se)) anyPm = true; return fmtPm(q.value, q.se); };
   const cards = (vm.ratios || []).map(r => {
     const card = lib.ratios[r.ratioIndex] || {};
-    const hv = r.height ? fmt(r.height.value, 3) : null, av = r.area ? fmt(r.area.value, 3) : null;
+    const hv = r.height ? pm(r.height) : null, av = r.area ? pm(r.area) : null;
     const hasH = (lib.ratioMap[r.ratioIndex]?.measures || []).includes('height');
     const extras = [];
     const ex = r.extras || {};
     if (ex.crystalliteSize && ex.crystalliteSize.length) {
-      extras.push('Cançado crystallite size L<sub>a</sub>: ' + ex.crystalliteSize.map(c =>
-        `<b class="mono">${fmt(c.valueNm, 3)} nm</b> (${c.basis}, E<sub>l</sub> = ${fmt(c.El, 3)} eV)`).join(' · '));
+      extras.push('Cançado crystallite size L<sub>a</sub> (low-defect regime, atlas): ' + ex.crystalliteSize.map(c =>
+        `<b class="mono">${fmtPm(c.valueNm, c.se)} nm</b> (${c.basis}, E<sub>l</sub> = ${fmt(c.El, 3)} eV)`).join(' · '));
     }
     if (ex.gWidth != null && isFinite(ex.gWidth)) extras.push(`G FWHM <b class="mono">${fmt(ex.gWidth, 3)} cm⁻¹</b> — broad G ⇒ amorphisation regime (atlas).`);
     if (ex.twoDWidth != null && isFinite(ex.twoDWidth)) extras.push(`2D FWHM <b class="mono">${fmt(ex.twoDWidth, 3)} cm⁻¹</b> (monolayer: single Lorentzian, 24–30 cm⁻¹).`);
@@ -77,10 +96,11 @@ export function renderRatios(el, vm) {
     return `<div class="rcard">
       <h4>${esc(r.name || card.n)}</h4><div class="rt">${richText(r.title || card.t)}</div>
       <div class="rvals">
-        ${hasH ? `<div class="rval"><div class="k">Height</div><div class="v${hv ? '' : ' na'}">${hv || 'n/a'}</div><div class="s">${r.height ? esc(r.height.source) : ''}</div></div>` : ''}
-        <div class="rval"><div class="k">Area</div><div class="v${av ? '' : ' na'}">${av || 'needs fit'}</div><div class="s">${r.area ? 'fit components' : ''}</div></div>
+        ${hasH ? `<div class="rval"><div class="k">Height</div><div class="v${hv ? '' : ' na'}"${r.height?.se != null ? ` title="${PM_TIP}"` : ''}>${hv || 'n/a'}</div><div class="s">${r.height ? esc(r.height.source) : ''}</div></div>` : ''}
+        <div class="rval"><div class="k">Area</div><div class="v${av ? '' : ' na'}"${r.area?.se != null ? ` title="${PM_TIP}"` : ''}>${av || 'needs fit'}</div><div class="s">${r.area ? 'fit components' : ''}</div></div>
       </div>
       ${extras.length ? `<div class="rextra">${extras.join('<br>')}</div>` : ''}
+      ${runnerUpLine(vm, r)}
       ${r.missing && r.missing.length ? `<div class="rmiss">${r.missing.map(esc).join(' · ')}</div>` : ''}
       <details class="atlas"><summary>Atlas guide</summary>
         <p>${richText(card.b)}</p>${(card.eqs || []).map(e => `<div class="eq">${richText(e)}</div>`).join('')}
@@ -89,7 +109,8 @@ export function renderRatios(el, vm) {
   }).join('');
   el.innerHTML = `<div class="pane-head"><h2 class="pane-title">Intensity ratios</h2><span class="pane-meta">${vm.deconv ? 'fit + detection' : 'detection only'}</span></div>
     ${vm.deconv ? '' : `<p class="empty" style="padding:0 0 12px">Areas and hidden bands (D′, D*, D″) need <b>Deconvolve</b>.</p>`}
-    ${cards || '<div class="empty">This library defines no ratios.</div>'}`;
+    ${cards || '<div class="empty">This library defines no ratios.</div>'}
+    ${anyPm ? `<p class="source-note">± is a fit-model standard uncertainty (1σ, from the fit's covariance). It covers noise for the fitted bands and line shapes, not the choice of bands, line shape or baseline, which can move a ratio further. It is not a probability.</p>` : ''}`;
 }
 
 // ------------------------------------------------------------------ read
@@ -128,10 +149,33 @@ function convText(st) {
   return st.conv || '';
 }
 
+/** Which band set the BIC chose for a window, the runner-up, and every candidate's ΔBIC. */
+function selectionBlock(vm, w) {
+  const s = w.selection;
+  if (!s) return '';
+  const lab = id => (vm.library.bands.find(b => b.id === id) || {}).label || id;
+  const always = w.bandIds.filter(id => !s.optional.includes(id));
+  const setOf = kept => vm.library.bands.map(b => b.id).filter(id => always.includes(id) || kept.includes(id)).map(lab).join(', ');
+  const next = s.models[1];
+  const tail = s.runnerUp
+    ? ` · runner-up ${esc(setOf(s.runnerUp.kept))} (ΔBIC +${fmt(s.runnerUp.dBic, 2)}): the data barely prefer one over the other (ΔBIC < ${fmt(s.closeCall, 2)}, Kass & Raftery 1995), so its ratios are shown on the Ratios tab too`
+    : next ? ` · next best ΔBIC +${fmt(next.dBic, 3)}` : '';
+  const rows = s.models.map(m => `<tr><td class="lab">${esc(setOf(m.kept))}</td><td>${m.k}</td><td>${m.dBic === 0 ? 'chosen' : '+' + fmt(m.dBic, 3)}</td></tr>`).join('');
+  return `<div class="selline">Band set chosen by BIC: <b>${esc(setOf(s.kept))}</b>${tail}.</div>
+    <details class="selsets"><summary>All ${s.models.length} band sets tried</summary>
+      <table class="ctab"><thead><tr><th>bands</th><th>free parameters</th><th>ΔBIC</th></tr></thead><tbody>${rows}</tbody></table>
+      <p class="source-note">BIC = n·ln(χ²/n) + k·ln n over the same ${s.models[0].n} points; lower is better. It weighs fit against the number of parameters; it does not prove a band is or is not there.</p></details>`;
+}
+
 export function renderFit(el, vm) {
   if (!vm.hasData) { el.innerHTML = '<div class="empty">Load a spectrum first.</div>'; return; }
   const d = vm.deconv;
-  const intro = `<p class="empty" style="padding:0 0 12px">Seeds PeakForge's Levenberg–Marquardt fitter with the atlas nine-band model: atlas centres (shifted for λ<sub>ex</sub>) as starting values, centres bounded to each band's window, widths ${vm.fitBounds}. First- and second-order regions are fitted separately with a linear local baseline. Profiles use PeakForge's WiRE-compatible pseudo-Voigt.</p>`;
+  const ms = vm.library?.fitDefaults?.modelSelection;
+  const lab = id => (vm.library.bands.find(b => b.id === id) || {}).label || id;
+  const selText = ms && !vm.fitAllBands
+    ? ` ${ms.optional.map(lab).join(', ')} are kept only in the band set with the lowest BIC (Bayesian information criterion; Schwarz 1978) over the same data; every other band is always fitted.`
+    : ms ? ' Every atlas band is fitted (model selection off).' : '';
+  const intro = `<p class="empty" style="padding:0 0 12px">Seeds PeakForge's Levenberg–Marquardt fitter with the atlas bands: atlas centres (shifted for λ<sub>ex</sub>) as starting values, centres bounded to each band's window, widths ${vm.fitBounds}. First- and second-order regions are fitted separately with a linear local baseline.${selText} Profiles use PeakForge's WiRE-compatible pseudo-Voigt.</p>`;
   if (!d) {
     el.innerHTML = `<div class="pane-head"><h2 class="pane-title">Deconvolution</h2><span class="pane-meta">not run</span></div>${intro}
       <button class="key key-primary" data-action="deconvolve">Deconvolve<kbd>F</kbd></button>`;
@@ -152,6 +196,7 @@ export function renderFit(el, vm) {
     return `<div class="fitwin"><h4><span>${wi === 0 && w.lo < 2000 ? 'First-order' : 'Second-order'} · ${fmt(w.lo, 4)}–${fmt(w.hi, 4)} cm⁻¹</span><span>${w.bandIds.length} bands</span></h4>
       <div class="quality ${cls}"><span class="v">${isFinite(st.quality) ? st.quality.toFixed(2) : '—'}<small style="font-size:12px">× noise</small></span><span class="verdict">${txt}</span></div>
       <div class="kv"><span>reduced χ²</span><b>${fmt(st.chiRed, 4)}</b><span>R²</span><b>${isFinite(st.r2) ? st.r2.toFixed(5) : '—'}</b><span>RMSE</span><b>${fmt(st.rmse, 4)}</b><span>iterations</span><b>${st.iters ?? '—'} · ${esc(convText(st))}</b></div>
+      ${selectionBlock(vm, w)}
       ${warn.map(x => `<div class="warnline">⚠ ${x}</div>`).join('')}
       <table class="ctab"><thead><tr><th>band</th><th>centre ± σ</th><th>FWHM</th><th>height</th><th>%G</th><th>area %</th></tr></thead><tbody>
       ${comps.map(c => `<tr class="${c.significant ? '' : 'weak'}" data-select="fc:${esc(c.bandId)}"><td class="lab">${esc(bandName(c.bandId))}</td>
@@ -165,6 +210,7 @@ export function renderFit(el, vm) {
     <div class="dlg-row" style="margin-top:6px">
       <label class="chk"><input type="checkbox" data-opt="showComponents"${vm.showComponents ? ' checked' : ''}> show component curves</label>
       <label class="chk"><input type="checkbox" data-opt="labelAllFit"${vm.labelAllFit ? ' checked' : ''}> label every fitted band</label>
+      ${vm.library?.fitDefaults?.modelSelection ? `<label class="chk"><input type="checkbox" data-opt="fitAllBands"${vm.fitAllBands ? ' checked' : ''}> fit every band (no model selection)</label>` : ''}
     </div>
     <div style="display:flex;gap:8px"><button class="btn primary" data-action="deconvolve">Re-fit (F)</button><button class="btn ghost" data-action="clearfit">Clear fit</button></div>
     <p class="source-note">A low residual does not prove the components are right: heavily overlapped bands are mathematically degenerate (see PeakForge's note). Treat weak shoulders with care.</p>`;

@@ -38,7 +38,7 @@ export class Chain {
       `<span class="mod-val" data-val="detect" style="margin-left:auto">—</span></div>` +
       `<input type="range" min="0" max="1" step="0.01" id="sens" aria-label="Detection sensitivity" title="Sensitivity: prominence threshold in multiples of the noise σ"></div>` + wire +
       mod('label', 'Label', { led: false }) +
-      `<button class="mod-fire" id="bDeconv" title="Deconvolve with the atlas nine-band model (F)"><b>Deconvolve</b><span data-val="fire">nine-band fit · F</span></button>`;
+      `<button class="mod-fire" id="bDeconv" title="Deconvolve with the atlas bands (F)"><b>Deconvolve</b><span data-val="fire">atlas band fit · F</span></button>`;
 
     this.el.addEventListener('click', e => {
       const t = e.target.closest('button');
@@ -86,7 +86,7 @@ export class Chain {
     const lab = this.el.querySelector('[data-mod="label"] .mod-val'); if (lab) lab.title = (m.libraryShort || '') + ' · match tolerance';
     const fire = this.el.querySelector('#bDeconv');
     fire.disabled = !m.canDeconvolve;
-    set('fire', m.deconvText || 'nine-band fit · F');
+    set('fire', m.deconvText || 'atlas band fit · F');
     if (this.pop && this.pop.refresh) this.pop.refresh();
   }
 

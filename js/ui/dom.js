@@ -48,6 +48,13 @@ export function fmt(v, sig = 4) {
   const s = v.toPrecision(sig);
   return s.includes('.') && !s.includes('e') ? s.replace(/\.?0+$/, '') : s;
 }
+/** "value ± uncertainty": the uncertainty to 2 significant figures, the value to the same decimal place. */
+export function fmtPm(v, se, sig = 3) {
+  if (v == null || !isFinite(v)) return '—';
+  if (se == null || !isFinite(se) || se <= 0) return fmt(v, sig);
+  const d = Math.min(6, Math.max(0, 1 - Math.floor(Math.log10(se))));
+  return `${v.toFixed(d)} ± ${se.toFixed(d)}`;
+}
 export const fmtX = v => (v == null || !isFinite(v)) ? '—' : v.toFixed(1);
 export const fmtSigned = (v, d = 1) => (v == null || !isFinite(v)) ? '—' : (v > 0 ? '+' : v < 0 ? '−' : '±') + Math.abs(v).toFixed(d);
 

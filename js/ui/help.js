@@ -10,7 +10,7 @@ export const SHORTCUTS = [
   ]],
   ['Analysis', [
     ['D', 'Detect & label again (replays the scan)'],
-    ['F', 'Deconvolve: nine-band atlas fit (PeakForge: auto-fit)'],
+    ['F', 'Deconvolve: atlas band fit, band set chosen by BIC (PeakForge: auto-fit)'],
     ['1 · 2 · 3', 'Laser 532 · 633 · 785 nm'],
     ['Double-click plot', 'Add a peak by hand (PeakForge: add peak)'],
     ['Del', 'Remove the selected peak (PeakForge: delete curve)'],

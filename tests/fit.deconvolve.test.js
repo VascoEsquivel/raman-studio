@@ -2,7 +2,7 @@
 // schematic curves (plot.mu / A / sig) so no band data is invented here; the
 // PreparedBand objects are built exactly as match/library.js builds them for the
 // reference laser (no dispersion shift, window = range ± toleranceCm).
-import { test, assert, assertEqual, assertDeepEqual, rng, gauss } from './harness.js';
+import { test, assert, assertEqual, assertClose, assertDeepEqual, rng, gauss } from './harness.js';
 import { deconvolve } from '../js/fit/deconvolve.js';
 import { peakY } from '../js/fit/profile.js';
 
@@ -120,4 +120,60 @@ test('a band absent from the data comes out not significant', () => {
   assert(G.significant, 'G still significant');
   assert(Number.isFinite(G.se.x0), 'other components keep their uncertainties');
   for (const c of res.components) assert(c.h >= 0, `${c.bandId} h ≥ 0`);
+});
+
+// ---- model selection (fitDefaults.modelSelection: BIC over the optional bands)
+const SEL = lib.fitDefaults.modelSelection;
+
+test('model selection: optional bands the data do not support are left out, by BIC', () => {
+  // D and G but no D*, D″ or D′
+  const { x, y } = synthGO({ seed: 11, amp: { Dstar: 0, Dpp: 0, Dp: 0 } });
+  const res = deconvolve(x, y, prepareBands(), opts);
+  const w = res.windows[0];
+  assertDeepEqual(w.selection.kept, [], 'no optional band kept');
+  assertDeepEqual([...w.bandIds].sort(), FIRST.filter(id => !SEL.optional.includes(id)).sort(), 'fitted bands');
+  for (const id of SEL.optional) {
+    assert(!byId(res, id), `${id} not among the components`);
+    const s = res.skipped.find(q => q.bandId === id);
+    assert(s && /model selection/.test(s.reason), `${id} listed as left out (${s && s.reason})`);
+  }
+  assert(byId(res, 'D').significant && byId(res, 'G').significant, 'D and G significant');
+  // every candidate set fitted on the same data, best first, BIC = n·ln(χ²/n) + k·ln n
+  const M = w.selection.models;
+  assertEqual(M.length, 1 << SEL.optional.length, 'every subset tried');
+  assert(M.every(m => m.n === w.stats.n), 'same data window for every set');
+  assertEqual(M[0].dBic, 0);
+  for (let i = 1; i < M.length; i++) assert(M[i].bic >= M[i - 1].bic, 'sorted by BIC');
+  const chi2 = w.stats.chiRed * Math.max(1, w.stats.n - w.stats.npar);
+  assertClose(M[0].bic, w.stats.n * Math.log(chi2 / w.stats.n) + w.stats.npar * Math.log(w.stats.n), 1e-6, 'BIC formula');
+  assertEqual(res.windows[1].selection, null, 'no optional bands in the second-order window');
+});
+
+test('model selection keeps the optional bands the data need, and only those', () => {
+  const all = deconvolve(...Object.values(synthGO({ seed: 12 })).slice(0, 2), prepareBands(), opts);
+  assertDeepEqual([...all.windows[0].selection.kept].sort(), [...SEL.optional].sort(), 'all three present: all kept');
+  const noDp = deconvolve(...Object.values(synthGO({ seed: 12, amp: { Dp: 0 } })).slice(0, 2), prepareBands(), opts);
+  assertDeepEqual([...noDp.windows[0].selection.kept].sort(), SEL.optional.filter(id => id !== 'Dp').sort(), 'D′ absent: the other two kept');
+});
+
+test('select: false fits every band, as before model selection', () => {
+  const { x, y } = synthGO({ seed: 11, amp: { Dstar: 0, Dpp: 0, Dp: 0 } });
+  const res = deconvolve(x, y, prepareBands(), { ...opts, select: false });
+  assertDeepEqual([...res.windows[0].bandIds].sort(), [...FIRST].sort());
+  assertEqual(res.windows[0].selection, null);
+  assertEqual(res.skipped.length, 0);
+});
+
+test('a runner-up band set is reported only within closeCall BIC units', () => {
+  for (const seed of [21, 22, 23, 24]) {
+    const { x, y } = synthGO({ seed, noise: 25, amp: { Dp: 0.25, Dpp: 0.4 } });
+    const s = deconvolve(x, y, prepareBands(), opts).windows[0].selection;
+    if (s.runnerUp) {
+      assert(s.runnerUp.dBic <= SEL.closeCall, `runner-up ΔBIC ${s.runnerUp.dBic}`);
+      assertDeepEqual(s.runnerUp.kept, s.models[1].kept, 'runner-up is the second-best set');
+      assert(s.runnerUp.components.some(c => c.bandId === 'G'), 'with its own components');
+    } else {
+      assert(s.models[1].dBic > SEL.closeCall, `no runner-up, next ΔBIC ${s.models[1].dBic}`);
+    }
+  }
 });

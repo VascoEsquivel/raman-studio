@@ -133,6 +133,18 @@ def build(html: str, commit: str) -> dict:
             "windowPadCm": 100,
             "note": "App settings, not atlas data: bounds for the deconvolution fitter. Centres are "
                     "bounded to each band's match window so bands cannot swap places.",
+            "modelSelection": {
+                "criterion": "BIC",
+                "optional": ["Dstar", "Dpp", "Dp"],
+                "closeCall": 2,
+                "note": "App setting, not atlas data, chosen by the atlas author (2026-10-27). In "
+                        "each fit window, bands listed here are kept only in the band set with the "
+                        "lowest Bayesian information criterion, n·ln(χ²/n) + k·ln n over the same "
+                        "data (Schwarz 1978, Ann. Statist. 6, 461–464); every other band is always "
+                        "fitted. A runner-up set within closeCall BIC units is reported with its "
+                        "ratios (ΔBIC < 2: 'not worth more than a bare mention', Kass & Raftery "
+                        "1995, J. Am. Stat. Assoc. 90, 773–795).",
+            },
         },
         "atlasNotes": notes,
         "bands": [derive_band(p) for p in c["PEAKS"]],

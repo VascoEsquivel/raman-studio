@@ -111,6 +111,8 @@ export function evaluateWorkflow(prepared, { ratios, components, assignments, pe
       s = { id, label, state: 'present', source: 'detected', x: p.x, h: p.y, w: isNum(p.fwhm) ? p.fwhm : NaN };
     } else if (c) {
       s = { id, label, state: 'absent', why: c.significant ? 'fitted height not above 3σ noise' : 'fit component not significant' };
+    } else if (src.leftOut(id)) {
+      s = { id, label, state: 'absent', why: 'left out of the fit by model selection (BIC): the data do not support it' };
     } else if (SHOULDER_BANDS.has(id) && pband(id) && searchedAt(pband(id).center)) {
       s = { id, label, state: 'unknown', why: 'not seen by peak detection (atlas: a shoulder / often weak); run Deconvolve to resolve it' };
     } else if (pband(id) && searchedAt(pband(id).center)) {

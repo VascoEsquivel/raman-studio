@@ -38,7 +38,17 @@
         "fwhmMin": { "type": "number", "exclusiveMinimum": 0 },
         "fwhmMax": { "type": "number", "exclusiveMinimum": 0 },
         "gaussianPercentSeed": { "type": "number", "minimum": 0, "maximum": 100 },
-        "windowPadCm": { "type": "number", "minimum": 0 }
+        "windowPadCm": { "type": "number", "minimum": 0 },
+        "modelSelection": {
+          "type": "object",
+          "required": ["criterion", "optional"],
+          "properties": {
+            "criterion": { "enum": ["BIC"] },
+            "optional": { "type": "array", "items": { "type": "string" }, "maxItems": 4 },
+            "closeCall": { "type": "number", "minimum": 0 },
+            "note": { "type": "string" }
+          }
+        }
       }
     },
     "atlasNotes": { "type": "object", "additionalProperties": { "type": "string" } },

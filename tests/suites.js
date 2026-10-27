@@ -19,6 +19,7 @@ export const SUITES = [
   'fit.profile.test.js',
   'fit.lm.test.js',
   'fit.deconvolve.test.js',
+  'fit.uncertainty.test.js',
   'match.library.test.js',
   'match.matcher.test.js',
   'analysis.ratios.test.js',

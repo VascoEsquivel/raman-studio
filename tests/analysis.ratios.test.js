@@ -44,8 +44,8 @@ test('one RatioResult per ratioMap entry, names and titles verbatim from the atl
 test('fit components: height and area ratios with extras', () => {
   const rs = computeRatios(p532, { components: fitSet, laserNm: 532 });
   const dg = byIdx(rs, 0);
-  assertDeepEqual(dg.height, { value: 1.25, source: 'fit', numValue: 100, denValue: 80 });
-  assertDeepEqual(dg.area, { value: 2, numValue: 6000, denValue: 3000 });
+  assertDeepEqual(dg.height, { value: 1.25, source: 'fit', numValue: 100, denValue: 80, se: null });
+  assertDeepEqual(dg.area, { value: 2, numValue: 6000, denValue: 3000, se: null });
   assertEqual(dg.extras.gWidth, 60);
   assertEqual(dg.extras.gWidthSource, 'fit');
   assertDeepEqual(dg.missing, []);
@@ -101,7 +101,7 @@ test('detected peaks only: heights from peak.y, no areas, D′ missing', () => {
   const assignments = matchPeaks(peaks, p532);
   for (const rs of [computeRatios(p532, { assignments, peaks, laserNm: 532 }), computeRatios(p532, { peaks, laserNm: 532 })]) {
     const dg = byIdx(rs, 0);
-    assertDeepEqual(dg.height, { value: 1.25, source: 'detected', numValue: 50, denValue: 40 });
+    assertDeepEqual(dg.height, { value: 1.25, source: 'detected', numValue: 50, denValue: 40, se: null });
     assertEqual(dg.area, null);
     assert(dg.missing.includes('Areas need a fit — run Deconvolve'), JSON.stringify(dg.missing));
     assertEqual(dg.extras.crystalliteSize.length, 1, 'height basis only');
@@ -148,7 +148,7 @@ test('a ratio never mixes fitted and detected heights', () => {
   const peaks = [peak('a', 1352, 50, 90), peak('b', 1590, 40, 55)];
   const comps = [comp('D', 1350, 110, 100, 6000), comp('G', 1586, 60, 80, 3000, false)];
   const dg = byIdx(computeRatios(p532, { peaks, components: comps }), 0);
-  assertDeepEqual(dg.height, { value: 1.25, source: 'detected', numValue: 50, denValue: 40 });
+  assertDeepEqual(dg.height, { value: 1.25, source: 'detected', numValue: 50, denValue: 40, se: null });
   assertEqual(dg.area, null);
   assert(dg.missing.includes('G fit component not significant'), JSON.stringify(dg.missing));
   assertEqual(dg.extras.gWidthSource, 'detected', 'G width from detection since its fit is not significant');

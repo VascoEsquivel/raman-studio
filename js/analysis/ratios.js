@@ -8,10 +8,15 @@
    bands, e.g. D′ under the G shoulder) win over detected apex heights, but a
    ratio never mixes the two — a fitted G against a raw-apex D would compare a
    baseline-free component with an overlap-inflated maximum. Areas exist only for
-   fitted components; a detected peak has no defensible area. */
+   fitted components; a detected peak has no defensible area.
+
+   Fitted ratios carry a fit-model standard uncertainty (fit/uncertainty.js) when
+   the caller passes the whole deconvolution: it covers noise for the fitted model,
+   not the choice of model, and is not a probability. Detected heights get none. */
 
 import { photonEnergyEV } from '../match/dispersion.js';
 import { matchPeaks } from '../match/matcher.js';
+import { ratioUncertainty } from '../fit/uncertainty.js';
 
 const isNum = v => typeof v === 'number' && Number.isFinite(v);
 
@@ -30,7 +35,9 @@ function asComponents(components) {
  * @returns {{ comps: object[], peaks: object[], assignments: object[], fitRun: boolean,
  *   bandLabel: (id: string) => string, component: (id: string) => object|null,
  *   fitted: (id: string) => object|null, detected: (id: string) => object|null }}
- *   fitted = significant component with a finite h; detected = peak assigned to the band
+ *   fitted = significant component with a finite h; detected = peak assigned to the band;
+ *   leftOut(id) (an addition) is true for a band model selection left out of the fit, known
+ *   only when `components` is the whole deconvolution
  */
 export function bandSources(prepared, { assignments, peaks, components } = {}) {
   const comps = asComponents(components);
@@ -75,13 +82,16 @@ export function bandSources(prepared, { assignments, peaks, components } = {}) {
     });
     return best;
   };
-  return { comps, peaks: peakList, assignments: asg, fitRun: comps.length > 0, bandLabel, component, fitted, detected };
+  const out = components && !Array.isArray(components) && Array.isArray(components.skipped) ? components.skipped : [];
+  const leftOut = id => out.some(s => s.bandId === id && s.selection);
+  return { comps, peaks: peakList, assignments: asg, fitRun: comps.length > 0, bandLabel, component, fitted, detected, leftOut };
 }
 
 function reasonFor(src, id) {
   const L = src.bandLabel(id);
   const c = src.component(id);
   if (c && !c.significant) return `${L} fit component not significant`;
+  if (!c && src.leftOut(id)) return `${L} left out of the fit by model selection (BIC)`;
   if (!c && src.fitRun) return `${L} not in the fitted range`;
   return `${L} not resolved — run Deconvolve`;
 }
@@ -105,21 +115,25 @@ function width(src, id) {
 /**
  * Compute every ratio card the library maps (library.ratioMap).
  * @param {object} prepared result of prepareLibrary
- * @param {{ assignments?: object[], peaks?: object[], components?: object[], laserNm?: number }} [data]
- *   assignments default to matchPeaks(peaks, prepared); laserNm defaults to prepared.laserNm
+ * @param {{ assignments?: object[], peaks?: object[], components?: object[]|object, laserNm?: number }} [data]
+ *   assignments default to matchPeaks(peaks, prepared); laserNm defaults to prepared.laserNm;
+ *   components may be the whole deconvolution, which adds uncertainties to fitted ratios
  * @returns {object[]} RatioResult per ratioMap entry:
  *   { ratioIndex, name, title, num, den,
- *     height: { value, source: 'fit'|'detected', numValue, denValue } | null,
- *     area: { value, numValue, denValue } | null,
+ *     height: { value, source: 'fit'|'detected', numValue, denValue, se } | null,
+ *     area: { value, numValue, denValue, se } | null,
  *     classify?: { nearest, label, value } | null,
- *     extras: { crystalliteSize?: [{ basis, valueNm, El }], gWidth?, gWidthSource?, twoDWidth?, twoDWidthSource? },
+ *     extras: { crystalliteSize?: [{ basis, valueNm, El, se }], gWidth?, gWidthSource?, twoDWidth?, twoDWidthSource? },
  *     missing: string[] }
  *   gWidth / twoDWidth are FWHMs in cm⁻¹; the *Source keys ('fit'|'detected') are additions to the contract.
+ *   `se` (an addition) is the 1σ fit-model standard uncertainty, null when it cannot be formed
+ *   (detected heights, no covariance, or components passed without their deconvolution).
  */
 export function computeRatios(prepared, { assignments, peaks, components, laserNm } = {}) {
   const lib = prepared && prepared.library;
   if (!lib || !Array.isArray(lib.ratioMap)) return [];
   const src = bandSources(prepared, { assignments, peaks, components });
+  const deconv = components && !Array.isArray(components) && Array.isArray(components.windows) ? components : null;
   const laser = isNum(laserNm) && laserNm > 0 ? laserNm : (prepared && isNum(prepared.laserNm) ? prepared.laserNm : null);
   const cards = Array.isArray(lib.ratios) ? lib.ratios : [];
 
@@ -139,7 +153,10 @@ export function computeRatios(prepared, { assignments, peaks, components, laserN
       if (fn && fd) pair = { n: fn.h, d: fd.h, source: 'fit' };
       else if (dn && dd) pair = { n: dn.y, d: dd.y, source: 'detected' };
       if (pair) {
-        if (pair.d > 0) height = { value: pair.n / pair.d, source: pair.source, numValue: pair.n, denValue: pair.d };
+        if (pair.d > 0) {
+          height = { value: pair.n / pair.d, source: pair.source, numValue: pair.n, denValue: pair.d,
+            se: pair.source === 'fit' && deconv ? ratioUncertainty(deconv, fn, fd, 'height') : null };
+        }
         else miss(`${src.bandLabel(den)} height is zero`);
       } else {
         // Name the band(s) with nothing usable; if each has *something* the
@@ -154,7 +171,10 @@ export function computeRatios(prepared, { assignments, peaks, components, laserN
     if (measures.includes('area')) {
       const fn = src.fitted(num), fd = src.fitted(den);
       if (fn && fd && isNum(fn.area) && isNum(fd.area)) {
-        if (fd.area > 0) area = { value: fn.area / fd.area, numValue: fn.area, denValue: fd.area };
+        if (fd.area > 0) {
+          area = { value: fn.area / fd.area, numValue: fn.area, denValue: fd.area,
+            se: deconv ? ratioUncertainty(deconv, fn, fd, 'area') : null };
+        }
         else miss(`${src.bandLabel(den)} area is zero`);
       } else if (!src.fitRun) {
         miss('Areas need a fit — run Deconvolve');
@@ -185,8 +205,10 @@ export function computeRatios(prepared, { assignments, peaks, components, laserN
       } else {
         // Cançado 2011 as quoted on the atlas card: Lₐ[nm] = (560 / E_l⁴) · (I_D/I_G)⁻¹.
         const k = 560 / Math.pow(El, 4);
-        if (height && height.value > 0) sizes.push({ basis: 'height', valueNm: k / height.value, El });
-        if (area && area.value > 0) sizes.push({ basis: 'area', valueNm: k / area.value, El });
+        // Lₐ ∝ 1/R, so its relative uncertainty is the ratio's
+        const size = (basis, r) => ({ basis, valueNm: k / r.value, El, se: r.se == null ? null : (k / r.value) * r.se / r.value });
+        if (height && height.value > 0) sizes.push(size('height', height));
+        if (area && area.value > 0) sizes.push(size('area', area));
       }
       if (sizes.length) result.extras.crystalliteSize = sizes;
     }

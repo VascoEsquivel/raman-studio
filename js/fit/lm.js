@@ -225,10 +225,13 @@ function intersect(lo, hi, user) {
  * @returns {{peaks:object[], baseline:object, stats:{chiRed:number, r2:number, rmse:number,
  *   sigma:number, quality:number, qualityWorst:number, qualityAt:number, iters:number,
  *   ms:number, npar:number, n:number, conv:string}, worstCorrelation:({rho:number, a:string,
- *   b:string}|null), undersampled:number[], insignificant:number[], residual:Float64Array}}
+ *   b:string}|null), undersampled:number[], insignificant:number[], residual:Float64Array,
+ *   covariance:({params:Array<{peak:number, k:string}>, matrix:Float64Array}|null)}}
  *   FitResult. Each peak copy carries the fitted x0/w/h/g, `se` {x0, w, h, g} (a field is
  *   null when that parameter is locked or the covariance matrix is singular) and `area`.
- *   The baseline copy carries `se` {c0, c1, c2} the same way.
+ *   The baseline copy carries `se` {c0, c1, c2} the same way. `covariance` is χ²ᵣ·(JᵀJ)⁻¹
+ *   over the free parameters (row-major, m × m; `peak` is −1 for baseline terms), null when
+ *   singular; its diagonal square roots are the `se` values.
  */
 export function fitPeaks({ x, y, peaks = [], baseline, weighting = 'unit', maxIter = 200 } = {}) {
   if (!x || !y || x.length !== y.length) throw new Error('Fit needs x and y arrays of the same length.');
@@ -407,12 +410,14 @@ export function fitPeaks({ x, y, peaks = [], baseline, weighting = 'unit', maxIt
      constrain it. */
   const se = ps.map(() => ({ x0: null, w: null, h: null, g: null }));
   const blSe = { c0: null, c1: null, c2: null };
-  let worstCorrelation = null;
+  let worstCorrelation = null, covariance = null;
   if (m) {
     const J = new Float64Array(n * m), r = new Float64Array(n);
     buildJacobian(J, r);
     const C = invert(normalMatrix(J), m);
     if (C) {
+      const s2 = Math.max(stats.chiRed, 1e-12);
+      covariance = { params: P.map(pr => ({ peak: pr.peak, k: pr.k })), matrix: Float64Array.from(C, v => v * s2) };
       const name = pr => (pr.peak < 0 ? 'baseline'
         : String(pr.o.name || pr.o.label || pr.o.bandId || `peak ${pr.peak + 1}`)) + '.' + pr.k;
       for (let j = 0; j < m; j++) {
@@ -450,5 +455,6 @@ export function fitPeaks({ x, y, peaks = [], baseline, weighting = 'unit', maxIt
     undersampled,
     insignificant,
     residual,
+    covariance,
   };
 }

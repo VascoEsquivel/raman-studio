@@ -45,6 +45,7 @@ const S = {
   peaks: [], assignments: [], items: [],
   deconv: null, ratios: [], workflow: null, noiseSigma: 0,
   display: 'processed', showComponents: true, labelAllFit: false,
+  fitAllBands: false,   // true: fit every library band, no model selection
   selectedId: null, hoverId: null, tab: 'peaks', labelsOn: true,
 };
 let manualSeq = 1;
@@ -159,11 +160,23 @@ function analyse() {
   buildItems();
   const comps = S.deconv ? S.deconv.components : [];
   try {
-    S.ratios = S.prepared ? computeRatios(S.prepared, { assignments: asg, peaks: S.peaks, components: comps, laserNm: S.laserNm }) : [];
+    // the whole deconvolution, so fitted ratios carry their fit-model uncertainty
+    S.ratios = S.prepared ? computeRatios(S.prepared, { assignments: asg, peaks: S.peaks, components: S.deconv || comps, laserNm: S.laserNm }) : [];
   } catch (err) { S.ratios = []; toast('Ratio calculation failed: ' + err.message, { warn: true }); }
+  // A runner-up band set within the close-call margin: the same ratios from its components.
+  S.runnerUp = null;
+  const ruWin = S.deconv ? S.deconv.windows.findIndex(w => w.selection && w.selection.runnerUp) : -1;
+  if (ruWin >= 0 && S.prepared) {
+    const ru = S.deconv.windows[ruWin].selection.runnerUp;
+    const alt = S.deconv.components.filter(c => c.windowIndex !== ruWin).concat(ru.components);
+    try {
+      S.runnerUp = { windowIndex: ruWin, kept: ru.kept, dBic: ru.dBic,
+        ratios: computeRatios(S.prepared, { assignments: asg, peaks: S.peaks, components: alt, laserNm: S.laserNm }) };
+    } catch { S.runnerUp = null; }
+  }
   try {
     S.workflow = S.prepared ? evaluateWorkflow(S.prepared, {
-      ratios: S.ratios, components: comps, assignments: asg, peaks: S.peaks, noiseSigma: S.noiseSigma,
+      ratios: S.ratios, components: S.deconv || comps, assignments: asg, peaks: S.peaks, noiseSigma: S.noiseSigma,
       xRange: [P.x[0], P.x[P.x.length - 1]],
     }) : null;
   } catch (err) { S.workflow = null; toast('Workflow evaluation failed: ' + err.message, { warn: true }); }
@@ -360,7 +373,7 @@ function viewModel() {
     hasData: !!S.processed, library: lib, prepared: S.prepared, laserNm: S.laserNm,
     items: S.items, selectedId: S.selectedId, ratios: S.ratios, workflow: S.workflow,
     deconv: S.deconv, toleranceCm: tol(), refText: refText(),
-    showComponents: S.showComponents, labelAllFit: S.labelAllFit,
+    showComponents: S.showComponents, labelAllFit: S.labelAllFit, fitAllBands: S.fitAllBands, runnerUp: S.runnerUp,
     fitBounds: lib ? `bounded to ${lib.fitDefaults?.fwhmMin ?? '—'}–${lib.fitDefaults?.fwhmMax ?? '—'} cm⁻¹` : '',
     data: dataModel(),
     map: S.tab === 'map' ? mapModel() : null,
@@ -453,7 +466,7 @@ function renderAll() {
     stats: P ? { points: P.x.length, x0: P.x[0], x1: P.x[P.x.length - 1], source: sp?.source?.format, spikes: (P.spikes || []).length, suspects: (P.suspects || []).length, peaks: S.peaks.length } : {},
     despikeInfo: P ? P.despikeInfo : null, setSize: sp ? companionsFor(sp).length : 0,
     canDeconvolve: has && !!S.prepared,
-    deconvText: S.deconv ? `${S.deconv.components.filter(c => c.significant).length} bands · q ${S.deconv.windows.map(w => isFinite(w.stats?.quality) ? w.stats.quality.toFixed(2) : '—').join(' / ')}` : 'nine-band fit · F',
+    deconvText: S.deconv ? `${S.deconv.components.filter(c => c.significant).length} bands · q ${S.deconv.windows.map(w => isFinite(w.stats?.quality) ? w.stats.quality.toFixed(2) : '—').join(' / ')}` : 'atlas band fit · F',
   });
   // segmented controls
   for (const b of $$('[data-display]')) b.setAttribute('aria-checked', String(b.dataset.display === S.display));
@@ -575,11 +588,12 @@ function spikeAction(act, d) {
 // ------------------------------------------------------------------ deconvolution
 async function runDeconvolution() {
   if (!S.processed || !S.prepared) return;
-  busy(true, 'Fitting the nine-band model…');
+  const choose = !S.fitAllBands && !!S.library.fitDefaults?.modelSelection;
+  busy(true, choose ? 'Fitting and choosing the band set…' : 'Fitting every band…');
   await nextFrame();
   try {
     const t0 = performance.now();
-    S.deconv = deconvolve(S.processed.x, S.processed.y, S.prepared.bands, { fitDefaults: S.library.fitDefaults });
+    S.deconv = deconvolve(S.processed.x, S.processed.y, S.prepared.bands, { fitDefaults: S.library.fitDefaults, select: !S.fitAllBands });
     analyse();
     const q = S.deconv.windows.map(w => isFinite(w.stats?.quality) ? w.stats.quality.toFixed(2) : '—').join(' / ');
     toast(`Deconvolved ${S.deconv.components.filter(c => c.significant).length} bands · quality ${q}× noise · ${Math.round(performance.now() - t0)} ms`);
@@ -811,7 +825,7 @@ function saveProject() {
     app: 'raman-studio', version: 1, savedAt: new Date().toISOString(),
     laserNm: S.laserNm, libraryId: S.library?.id, settings: S.settings, detect: S.detect, toleranceCm: S.toleranceCm,
     display: S.display, stack: S.stack, activeIndex: S.spectra.findIndex(s => s.id === S.activeId),
-    manual: S.manual, hidden: S.hidden, overrides: S.overrides, spikeEdits: S.spikeEdits, ranDeconvolution: !!S.deconv,
+    manual: S.manual, hidden: S.hidden, overrides: S.overrides, spikeEdits: S.spikeEdits, ranDeconvolution: !!S.deconv, fitAllBands: S.fitAllBands,
     spectra: S.spectra.map(s => ({ name: s.name, x: Array.from(s.x), y: Array.from(s.y), xLabel: s.xLabel, xUnit: s.xUnit, yLabel: s.yLabel, source: s.source, meta: s.meta })),
   };
   download(new Blob([JSON.stringify(o)], { type: 'application/json' }), safeName(sp.name) + '.raman-studio.json');
@@ -831,6 +845,7 @@ async function openProject(file) {
     setActive(spectra[Math.max(0, o.activeIndex || 0)].id, { reveal: true });
     S.manual = o.manual || []; S.hidden = o.hidden || []; S.overrides = o.overrides || {};
     S.spikeEdits = o.spikeEdits || { keep: [], zaps: [] };
+    S.fitAllBands = !!o.fitAllBands;
     manualSeq = 1 + S.manual.reduce((m, q) => Math.max(m, +String(q.id).split(':')[1] || 0), 0);
     recompute('peaks');
     if (o.ranDeconvolution) await runDeconvolution();
@@ -1014,7 +1029,9 @@ function wire() {
       renderDeck(); return;
     }
     const o = e.target.closest('[data-opt]'); if (!o) return;
-    S[o.dataset.opt] = o.checked; renderAll();
+    S[o.dataset.opt] = o.checked;
+    if (o.dataset.opt === 'fitAllBands' && S.deconv) { runDeconvolution(); return; }
+    renderAll();
   });
   $('#deck').addEventListener('pointerover', e => {
     const c = e.target.closest('[data-tip]'), ro = $('#mapReadout');

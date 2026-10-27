@@ -13,7 +13,14 @@
    the model is linear in the heights and the baseline, so the heights are seeded
    by non-negative least squares against the data with the linear baseline
    solved for jointly. That is the best possible start for the seeded shapes and
-   LM only has to refine shape parameters. */
+   LM only has to refine shape parameters.
+
+   Model selection (fitDefaults.modelSelection): bands the library lists as
+   optional are kept only in the band set with the lowest BIC, n·ln(χ²/n) + k·ln n
+   (Schwarz 1978). Every subset of a window's optional bands is fitted on the same
+   data window, the one the full band set defines, so the criteria are comparable.
+   Fitting a weak shoulder (D′ under G) that the data cannot support otherwise
+   leaves the overlapped pair degenerate and the stronger band "not significant". */
 
 import { peakY } from './profile.js';
 import { fitPeaks, evaluateModel } from './lm.js';
@@ -130,6 +137,87 @@ function nnls(cols, b) {
   return x;
 }
 
+// Seed and fit one band set over one window (xs ascending, u = xs scaled to [0, 1]).
+function fitSet(list, xs, ys, u, { fwhmMin, fwhmMax, gSeed, weighting, maxIter }) {
+  const nw = xs.length, xlo = xs[0], xhi = xs[nw - 1];
+  const seeds = list.map(band => {
+    const blo = Math.max(band.window[0], xlo), bhi = Math.min(band.window[1], xhi);
+    const wRaw = isNum(band.fwhmSeed) && band.fwhmSeed > 0 ? band.fwhmSeed : band.window[1] - band.window[0];
+    return {
+      band,
+      x0: clamp(isNum(band.center) ? band.center : (blo + bhi) / 2, blo, bhi),
+      w: clamp(wRaw, fwhmMin, fwhmMax),
+      g: gSeed,
+      bounds: { x0: [blo, bhi], w: [fwhmMin, fwhmMax], h: [0, Infinity] },
+      // A band window that only grazes the data edge leaves no room to move.
+      lock: bhi - blo < 1e-9 ? { x0: true } : undefined,
+    };
+  });
+
+  // Heights by NNLS with the linear baseline projected out, then the baseline
+  // from what the seeded components leave.
+  const cols = seeds.map(s => Float64Array.from(xs, v => peakY({ x0: s.x0, w: s.w, h: 1, g: s.g }, v)));
+  const hs = nnls(cols.map(c => detrend(u, c)), detrend(u, ys));
+  const rest = Float64Array.from(ys);
+  for (let j = 0; j < cols.length; j++) for (let i = 0; i < nw; i++) rest[i] -= hs[j] * cols[j][i];
+  const line = lineFit(u, rest);
+  // A small positive floor keeps every component's shape derivatives non-zero
+  // at the start; LM is free to take a height back to 0.
+  let above = 0, ylo = Infinity, yhi = -Infinity;
+  for (let i = 0; i < nw; i++) {
+    above = Math.max(above, ys[i] - (line.a + line.b * u[i]));
+    ylo = Math.min(ylo, ys[i]); yhi = Math.max(yhi, ys[i]);
+  }
+  const yspan = Math.abs(yhi - ylo) || 1;
+  const hFloor = above > 0 ? 0.01 * above : 1e-6 * yspan;
+
+  const startPeaks = seeds.map((s, j) => {
+    const p = { x0: s.x0, w: s.w, h: Math.max(hs[j], hFloor), g: s.g, bounds: s.bounds,
+      bandId: s.band.id, label: s.band.label, name: s.band.label };
+    if (s.lock) p.lock = s.lock;
+    return p;
+  });
+  const startBaseline = { mode: 'linear', c0: line.a, c1: line.b, c2: 0, fit: true, xMin: xlo, xMax: xhi };
+  let res = fitPeaks({ x: xs, y: ys, peaks: startPeaks, baseline: startBaseline, weighting, maxIter });
+
+  // A height pinned at 0 leaves that component's x0/w/g columns exactly zero,
+  // which makes JᵀJ singular and would cost every component in the window its
+  // uncertainty. Freeze the shape of the vanished ones and refit from here.
+  const dead = new Set();
+  res.peaks.forEach((p, j) => { if (!(p.h > 1e-9 * yspan)) dead.add(j); });
+  if (dead.size) {
+    const again = res.peaks.map((p, j) => (dead.has(j)
+      ? Object.assign({}, p, { lock: Object.assign({}, p.lock, { x0: true, w: true, g: true }) })
+      : p));
+    const res2 = fitPeaks({ x: xs, y: ys, peaks: again, baseline: res.baseline, weighting, maxIter });
+    res2.stats.iters += res.stats.iters;
+    res2.stats.ms += res.stats.ms;
+    res = res2;
+  }
+  return res;
+}
+
+/** BIC of a fit from its statistics: n·ln(χ²/n) + k·ln n, k = free parameters. */
+function bic(st) {
+  const chi2 = st.chiRed * Math.max(1, st.n - st.npar);
+  return st.n * Math.log(Math.max(chi2 / st.n, 1e-300)) + st.npar * Math.log(st.n);
+}
+
+/** The components of one window's fit, in the result's shape. */
+function componentsOf(res, list, windowIndex) {
+  return res.peaks.map((p, j) => {
+    const sh = p.se.h;
+    return {
+      bandId: p.bandId, label: p.label,
+      x0: p.x0, w: p.w, h: p.h, g: p.g, area: p.area,
+      se: { x0: p.se.x0, w: p.se.w, h: p.se.h, g: p.se.g },
+      significant: p.h > 0 && Number.isFinite(sh) && !res.insignificant.includes(j),
+      windowIndex,
+      _band: list.find(b => b.id === p.bandId),
+    };
+  });
+}
+
 /**
  * Deconvolve a spectrum into one pseudo-Voigt component per prepared library band.
  *
@@ -142,8 +230,16 @@ function nnls(cols, b) {
  * within [fwhmMin, fwhmMax], h ≥ 0. A component whose height reaches 0 is refitted
  * with its shape frozen so the rest of the window still gets uncertainties.
  *
+ * With `fitDefaults.modelSelection` ({ criterion: 'BIC', optional: band ids,
+ * closeCall }) and `select` true, a window's optional bands are kept only in the
+ * band set with the lowest BIC; the others go to `skipped` with the BIC increase
+ * that adding each one back would cost. The window records every candidate set
+ * (`selection.models`, best first) and, when the next-best is within `closeCall`,
+ * that set's components (`selection.runnerUp`).
+ *
  * Missing `fitDefaults` fields fall back to: fwhmMin → the fitter's own lower
- * width bound, fwhmMax → its upper bound, gaussianPercentSeed 50, windowPadCm 100.
+ * width bound, fwhmMax → its upper bound, gaussianPercentSeed 50, windowPadCm 100,
+ * no model selection.
  *
  * @param {ArrayLike<number>} x ascending Raman shift, cm⁻¹
  * @param {ArrayLike<number>} y intensity (normally baseline-corrected)
@@ -153,16 +249,21 @@ function nnls(cols, b) {
  *   the library's fitDefaults block
  * @param {'unit'|'poisson'} [opts.weighting='unit']
  * @param {number} [opts.maxIter=300]
+ * @param {boolean} [opts.select=true] apply fitDefaults.modelSelection (false: fit every band)
  * @returns {{windows:Array<{lo:number, hi:number, bandIds:string[], stats:object, baseline:object,
  *   residual:{x:Float64Array, r:Float64Array}, worstCorrelation:object|null, undersampled:string[],
- *   insignificant:string[]}>, components:Array<{bandId:string, label:string, x0:number, w:number,
+ *   insignificant:string[], covariance:({params:Array<{bandId:?string, k:string}>, matrix:Float64Array}|null),
+ *   selection:({criterion:string, optional:string[], kept:string[], closeCall:number,
+ *     models:Array<{kept:string[], n:number, k:number, bic:number, dBic:number}>,
+ *     runnerUp:({kept:string[], dBic:number, components:object[]}|null)}|null)}>,
+ *   components:Array<{bandId:string, label:string, x0:number, w:number,
  *   h:number, g:number, area:number, se:{x0:?number, w:?number, h:?number, g:?number},
- *   significant:boolean, windowIndex:number}>, skipped:Array<{bandId:string, reason:string}>,
+ *   significant:boolean, windowIndex:number}>, skipped:Array<{bandId:string, reason:string, selection?:true}>,
  *   model:function((number|ArrayLike<number>)):(number|Float64Array)}} Deconvolution. `model(x)`
  *   is NaN outside the fitted windows; given an array it returns a Float64Array. A component is
  *   significant when h > 0, its height uncertainty is known and h ≥ 2σ_h.
  */
-export function deconvolve(x, y, preparedBands, { fitDefaults = {}, weighting = 'unit', maxIter = 300 } = {}) {
+export function deconvolve(x, y, preparedBands, { fitDefaults = {}, weighting = 'unit', maxIter = 300, select = true } = {}) {
   if (!x || !y || x.length !== y.length) throw new Error('Deconvolution needs x and y arrays of the same length.');
   const n = x.length;
   const X = Float64Array.from(x), Y = Float64Array.from(y);
@@ -171,6 +272,10 @@ export function deconvolve(x, y, preparedBands, { fitDefaults = {}, weighting = 
   const fwhmMax = isNum(fd.fwhmMax) ? fd.fwhmMax : Infinity;
   const gSeed = isNum(fd.gaussianPercentSeed) ? clamp(fd.gaussianPercentSeed, 0, 100) : 50;
   const padCm = isNum(fd.windowPadCm) ? Math.max(0, fd.windowPadCm) : 100;
+  const ms = select && fd.modelSelection && Array.isArray(fd.modelSelection.optional) ? fd.modelSelection : null;
+  if (ms && ms.criterion !== 'BIC') throw new Error(`Unknown model selection criterion "${ms.criterion}" (expected BIC).`);
+  const closeCall = ms && isNum(ms.closeCall) ? ms.closeCall : 2;
+  const fitOpts = { fwhmMin, fwhmMax, gSeed, weighting, maxIter };
 
   const windows = [], components = [], skipped = [], fitted = [];
   let xmin = Infinity, xmax = -Infinity;
@@ -218,63 +323,40 @@ export function deconvolve(x, y, preparedBands, { fitDefaults = {}, weighting = 
     const xs = Float64Array.from(idx, i => X[i]), ys = Float64Array.from(idx, i => Y[i]);
     const xlo = xs[0], xhi = xs[nw - 1];
     const u = Float64Array.from(xs, v => (v - xlo) / ((xhi - xlo) || 1));
-
-    const seeds = list.map(band => {
-      const blo = Math.max(band.window[0], xlo), bhi = Math.min(band.window[1], xhi);
-      const wRaw = isNum(band.fwhmSeed) && band.fwhmSeed > 0 ? band.fwhmSeed : band.window[1] - band.window[0];
-      return {
-        band,
-        x0: clamp(isNum(band.center) ? band.center : (blo + bhi) / 2, blo, bhi),
-        w: clamp(wRaw, fwhmMin, fwhmMax),
-        g: gSeed,
-        bounds: { x0: [blo, bhi], w: [fwhmMin, fwhmMax], h: [0, Infinity] },
-        // A band window that only grazes the data edge leaves no room to move.
-        lock: bhi - blo < 1e-9 ? { x0: true } : undefined,
-      };
-    });
-
-    // Heights by NNLS with the linear baseline projected out, then the baseline
-    // from what the seeded components leave.
-    const cols = seeds.map(s => Float64Array.from(xs, v => peakY({ x0: s.x0, w: s.w, h: 1, g: s.g }, v)));
-    const hs = nnls(cols.map(c => detrend(u, c)), detrend(u, ys));
-    const rest = Float64Array.from(ys);
-    for (let j = 0; j < cols.length; j++) for (let i = 0; i < nw; i++) rest[i] -= hs[j] * cols[j][i];
-    const line = lineFit(u, rest);
-    // A small positive floor keeps every component's shape derivatives non-zero
-    // at the start; LM is free to take a height back to 0.
-    let above = 0, ylo = Infinity, yhi = -Infinity;
-    for (let i = 0; i < nw; i++) {
-      above = Math.max(above, ys[i] - (line.a + line.b * u[i]));
-      ylo = Math.min(ylo, ys[i]); yhi = Math.max(yhi, ys[i]);
-    }
-    const yspan = Math.abs(yhi - ylo) || 1;
-    const hFloor = above > 0 ? 0.01 * above : 1e-6 * yspan;
-
-    const startPeaks = seeds.map((s, j) => {
-      const p = { x0: s.x0, w: s.w, h: Math.max(hs[j], hFloor), g: s.g, bounds: s.bounds,
-        bandId: s.band.id, label: s.band.label, name: s.band.label };
-      if (s.lock) p.lock = s.lock;
-      return p;
-    });
-    const startBaseline = { mode: 'linear', c0: line.a, c1: line.b, c2: 0, fit: true, xMin: xlo, xMax: xhi };
-    let res = fitPeaks({ x: xs, y: ys, peaks: startPeaks, baseline: startBaseline, weighting, maxIter });
-
-    // A height pinned at 0 leaves that component's x0/w/g columns exactly zero,
-    // which makes JᵀJ singular and would cost every component in the window its
-    // uncertainty. Freeze the shape of the vanished ones and refit from here.
-    const dead = new Set();
-    res.peaks.forEach((p, j) => { if (!(p.h > 1e-9 * yspan)) dead.add(j); });
-    if (dead.size) {
-      const again = res.peaks.map((p, j) => (dead.has(j)
-        ? Object.assign({}, p, { lock: Object.assign({}, p.lock, { x0: true, w: true, g: true }) })
-        : p));
-      const res2 = fitPeaks({ x: xs, y: ys, peaks: again, baseline: res.baseline, weighting, maxIter });
-      res2.stats.iters += res.stats.iters;
-      res2.stats.ms += res.stats.ms;
-      res = res2;
-    }
-
     const windowIndex = windows.length;
+
+    // Every subset of this window's optional bands, fitted on the same data.
+    const optional = ms ? list.filter(b => ms.optional.includes(b.id)) : [];
+    let res, chosen = list, selection = null;
+    if (optional.length) {
+      const cands = [];
+      for (let m = 0; m < 1 << optional.length; m++) {
+        const keep = optional.filter((_, j) => (m >> j) & 1);
+        const set = list.filter(b => !optional.includes(b) || keep.includes(b));
+        const r = fitSet(set, xs, ys, u, fitOpts);
+        cands.push({ keep, set, res: r, bic: bic(r.stats) });
+      }
+      cands.sort((a, b) => a.bic - b.bic);
+      const best = cands[0], next = cands[1];
+      res = best.res; chosen = best.set;
+      const ids = c => c.keep.map(b => b.id);
+      selection = {
+        criterion: 'BIC', optional: optional.map(b => b.id), kept: ids(best), closeCall,
+        models: cands.map(c => ({ kept: ids(c), n: c.res.stats.n, k: c.res.stats.npar, bic: c.bic, dBic: c.bic - best.bic })),
+        runnerUp: next && next.bic - best.bic <= closeCall
+          ? { kept: ids(next), dBic: next.bic - best.bic, components: componentsOf(next.res, next.set, windowIndex).map(({ _band, ...c }) => c) }
+          : null,
+      };
+      // what each left-out band would have cost
+      for (const b of optional) {
+        if (best.keep.includes(b)) continue;
+        const withIt = cands.find(c => c.keep.length === best.keep.length + 1 && c.keep.includes(b) && best.keep.every(k => c.keep.includes(k)));
+        skipped.push({ bandId: b.id, reason: `left out by model selection: adding it raises the BIC by ${fmt(withIt.bic - best.bic)}`, selection: true });
+      }
+    } else {
+      res = fitSet(list, xs, ys, u, fitOpts);
+    }
+
     const ids = res.peaks.map(p => p.bandId);
     windows.push({
       lo: xlo, hi: xhi, bandIds: ids, stats: res.stats, baseline: res.baseline,
@@ -282,19 +364,18 @@ export function deconvolve(x, y, preparedBands, { fitDefaults = {}, weighting = 
       worstCorrelation: res.worstCorrelation,
       undersampled: res.undersampled.map(j => ids[j]),
       insignificant: res.insignificant.map(j => ids[j]),
+      // the fit's parameter covariance, keyed by band (null bandId: a baseline term)
+      covariance: res.covariance && {
+        params: res.covariance.params.map(q => ({ bandId: q.peak < 0 ? null : ids[q.peak], k: q.k })),
+        matrix: res.covariance.matrix,
+      },
+      selection,
     });
     fitted.push({ lo: xlo, hi: xhi, peaks: res.peaks, baseline: res.baseline });
-    res.peaks.forEach((p, j) => {
-      const sh = p.se.h;
-      components.push({
-        bandId: p.bandId, label: p.label,
-        x0: p.x0, w: p.w, h: p.h, g: p.g, area: p.area,
-        se: { x0: p.se.x0, w: p.se.w, h: p.se.h, g: p.se.g },
-        significant: p.h > 0 && Number.isFinite(sh) && !res.insignificant.includes(j),
-        windowIndex,
-        _order: order.get(list[j]),
-      });
-    });
+    for (const c of componentsOf(res, chosen, windowIndex)) {
+      const { _band, ...rest } = c;
+      components.push(Object.assign(rest, { _order: order.get(_band) }));
+    }
   }
 
   components.sort((a, b) => a._order - b._order);
