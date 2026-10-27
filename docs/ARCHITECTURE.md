@@ -128,18 +128,18 @@ roughly uniform spacing, and values overlapping 50–4000 cm⁻¹; header names 
 
 | module | exports |
 |---|---|
-| `despike.js` | `despike(x, y, { threshold = 6, maxWidth = 3 })` → `{ y, removed: [{ index, x, y, replacedY }], spikes: [{ start, end, xStart, xEnd, height }] }` — Whitaker–Hayes modified z-score on first differences plus a width test: a spike rises and falls within ≤ `maxWidth` points; real peaks (wider) are never touched. Removed points are replaced by linear interpolation between the nearest clean neighbours. |
+| `despike.js` | `despike(x, y, { threshold = 6, maxWidth = 15, minBandCm = null, companions = null, edits = null })` → `{ y, removed: [{ index, x, y, replacedY }], spikes: [{ start, end, xStart, xEnd, height, kind, misfit, share }], suspects: [{ …, kind, misfit, share }], restored: [{ …, kind, share }], info: { sigma, shotNoise, spacing, minBandPts, minBandCm, minBandAuto, maxWidth, threshold, companions } }` — model-based: candidates come from a hole predictor at every scale up to `maxWidth` points (σ from Whitaker–Hayes, signal-dependent); a candidate is removed only if no smooth model (quadratic background, optional step, one or two non-negative pseudo-Voigts with FWHM ≥ `minBandCm`, default 3 sample spacings) explains it, judged both statistically (χ²) and materially (share of its height), and it stands above its neighbours. `companions` (≥ 4 other spectra on the same x): a removed feature they share is put back (`restored` kind `recurring`), or labelled `artifact` if one point wide. `edits.keep` (cm⁻¹) restores removals (`kept`), `edits.zaps` ([lo, hi] cm⁻¹) interpolates by hand (spike kind `manual`). Spike kinds: `cosmic`, `artifact`, `manual`. `suspects` are features left in place that a person should judge. Runs ≤ 3 points are replaced by a quadratic through 2 clean points each side, longer runs and zaps by linear interpolation. The header comment documents every constant. |
 | `baseline.js` | `BASELINE_METHODS = ['none','constant','linear','quadratic','als']`; `baselinePoly(x, y, { order, maxIter = 100, tol = 1e-3 })` (modified polyfit, Lieber & Mahadevan-Jansen 2003 — the fit is clipped under the data so peaks don't lift it; x normalised to u ∈ [0,1] as in PeakForge); `baselineALS(y, { lambda = 1e5, p = 0.01, maxIter = 10 })` (Eilers & Boelens 2005, banded O(n) solver); `computeBaseline(x, y, { method, lambda, p })` → Float64Array or null for 'none' |
 | `smooth.js` | `sgCoefficients(window, order, deriv = 0)`; `savitzkyGolay(y, { window = 11, order = 3, deriv = 0 })` → Float64Array; edges by polynomial fit to the first/last window (scipy `mode='interp'`) |
 | `normalize.js` | `normalize(x, y, { mode = 'none', window })` → `{ y, factor, ref }`; modes `none`, `max`, `band` (max within `window` [lo,hi], e.g. the G band), `area` (trapezoid ∫y dx = 1) |
-| `pipeline.js` | `DEFAULT_SETTINGS`; `runPipeline(spectrum, settings, { bandWindow })` → Processed |
+| `pipeline.js` | `DEFAULT_SETTINGS`; `runPipeline(spectrum, settings, { bandWindow, companions, spikeEdits })` → Processed. `companions`: y arrays of other spectra on exactly this x, cropped with it and passed to despike when `settings.despike.useSet`; `spikeEdits`: `{ keep, zaps }` for despike. |
 
 Pipeline order: crop → despike → baseline (on despiked) → smooth → normalize.
 
 ```js
 DEFAULT_SETTINGS = {
   crop:      { on: false, lo: null, hi: null },
-  despike:   { on: true, threshold: 6, maxWidth: 3 },
+  despike:   { on: true, threshold: 6, maxWidth: 15, minBandCm: 0, useSet: true },   // minBandCm 0 = auto (3 spacings)
   baseline:  { on: true, method: 'als', lambda: 1e5, p: 0.01 },
   smooth:    { on: false, window: 11, order: 3 },
   normalize: { on: false, mode: 'max' },      // 'max' | 'band' | 'area'
@@ -147,6 +147,7 @@ DEFAULT_SETTINGS = {
 Processed = {
   x, raw,                       // cropped input
   despiked, removed, spikes,    // after spike removal (raw units)
+  suspects, restored, despikeInfo,   // despike's review lists and info (null when despike is off)
   baseline,                     // Float64Array (raw units) or null
   corrected,                    // despiked − baseline
   smoothed,                     // corrected, smoothed if enabled
@@ -215,6 +216,7 @@ Deconvolution = {
 |---|---|
 | `ratios.js` | `computeRatios(prepared, { assignments, peaks, components, laserNm })` → RatioResult[] — one per `library.ratioMap` entry. Heights come from significant fit components when available, else from detected peaks matched to the band; areas only from fit components. I_D/I_G adds the atlas's Cançado crystallite size (Lₐ[nm] = (560/E_l⁴)·(I_D/I_G)⁻¹, E_l from the selected laser) and the G FWHM; I_D/I_D′ reports the nearest atlas reference value (13 / 7 / 3.5). |
 | `workflow.js` | `evaluateWorkflow(prepared, { ratios, components, assignments, peaks, noiseSigma })` → `{ steps: [{ index, html, status: 'match'|'partial'|'no'|'info'|'insufficient', evidence: string[] }], summary }` — walks the atlas's eight steps with the measured numbers. Only numeric criteria the atlas states are used as thresholds (e.g. 2D FWHM < 30 cm⁻¹, I_2D/I_G ≥ 2); anything else is reported as a number for the user to judge. Library-specific: evaluates only for `graphene-go`; other libraries get their steps back as `info`. |
+| `acquisition.js` | `acquisition(meta)` → `{ fields: [{ label, value, key }], laserNm, exposureS, accumulations, cosmicRayRemoval, hasHeader }` from `meta.header` (WiRE's SPC log lines; exposure converted only from WiRE's "Time: <ms>" form; operator and serial numbers are not surfaced). `qualityFlags(spectrum, acq)` → `[{ level: 'warn'|'info', id, text }]`: instrument cosmic-ray removal off (and single accumulation), maximum held over ≥ 3 points (saturation), the 16-bit ceiling, flat segments. Reports only; never changes data. |
 
 ```js
 RatioResult = {
@@ -248,8 +250,16 @@ from the same layout, so PNG/SVG match the screen.
   atlas schematic: `plot.mu/A/sig` → pseudo-Voigt components, fluorescence baseline, Poisson
   noise, a few cosmic-ray spikes) and `synthMonolayer(lib, opts)` (G + sharp 2D, no D, using the
   atlas's monolayer criteria). Both return Spectrum with `meta.synthetic = true`; seeded.
-- `export/csv.js`: `toCSV(headers, rows)` (RFC 4180), `peakTableCSV(rows)`,
-  `fitParamsCSV(components, windows)`, `spectrumCSV(processed)`.
+- `export/csv.js`: `toCSV(headers, rows)` (RFC 4180), `peakTableCSV(rows)` (columns label, kind,
+  tier, position_cm-1, height, fwhm_cm-1, prominence, area, match_score, delta_cm-1, band_id,
+  band_name; `match_score` is the matcher's distance score, not a probability),
+  `fitParamsCSV(components, windows)`, `spectrumCSV(processed)` (x, raw, baseline, corrected,
+  final, despiked).
+- UI (`main.js`, `ui/panels.js`): the **Data** tab renders acquisition fields, quality flags and
+  the despike lists (`spikes` with Keep, `restored`, `suspects` with Remove, a zap form).
+  Keeps and zaps live in `S.spikeEdits` per active spectrum, go through undo/redo, project files
+  and the report. Companions for despike are the other spectra of the same file and sheet on an
+  identical x axis. Match confidence is always shown as a score with a tooltip, never as "%".
 
 ## Band libraries
 

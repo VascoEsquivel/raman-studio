@@ -24,9 +24,12 @@
       signal (shot noise, estimated from the spectrum itself) and is widened by
       SHAPE_TOL of the band signal, because real line shapes are not perfect
       pseudo-Voigts. A candidate is a spike only if the best model fails both
-      statistically (χ² Wilson–Hilferty deviate > Z_CRIT) and materially
-      (misses the feature by more than REL_MIN of its height): then no real
-      band can be there. Otherwise it stays.
+      statistically (χ² Wilson–Hilferty deviate > Z_CRIT, over the window or
+      over the candidate and its neighbours) and materially (misses the feature
+      by more than REL_MIN of its height), or misses it grossly (REL_GROSS) at
+      the lower significance Z_GROSS: then no real band can be there. The
+      background may include a step where the window holds a real jump outside
+      the candidate. Otherwise the candidate stays.
    3. Removal is greedy, tallest spike first; after each removal the
       candidates whose windows it touched are judged again, so one spike cannot
       make a nearby band look wrong. A wide candidate containing a smaller
@@ -46,17 +49,23 @@
    criteria, or with companions: unique to this spectrum and tall, or a
    one-point artifact) are returned as `suspects` for a person to judge.
 
-   Removed points are replaced by linear interpolation between the nearest
-   clean neighbours (at an array edge: the nearest clean value). */
+   Removed runs of up to 3 points are replaced by a quadratic through the 2
+   clean points on each side (it follows a band top); longer runs and hand zaps
+   by linear interpolation between the nearest clean neighbours (at an array
+   edge: the nearest clean value). */
 
 const NEIGHBOUR_FRACTION = 0.5;
 const SCALES = [1, 2, 3, 5, 8, 12, 16, 20, 25];
 const AUTO_MIN_BAND_PTS = 3;
 const Z_CRIT = 4;          // χ² tail deviate above which no band explains a feature …
 const REL_MIN = 0.15;      // … provided the best band model also misses it by this share of its height
+const Z_GROSS = 3, REL_GROSS = 0.3;   // a gross miss (≥ 30 % of the height) needs less statistical weight
+const INNER_SIGMA = 4;     // points this many σ above the best band model form the spike inside a wider candidate
+const PROM_SIGMA = 3;      // a spike rises at least this many σ above the higher of its two neighbours
 const Z_SUSPECT = 2.5;     // kept, but close enough to Z_CRIT to show the user
 const SHAPE_TOL = 0.05;    // relative line-shape mismatch tolerated for real bands
 const RECUR = 0.2;         // share of companion spectra that makes a feature recurring
+const STEP_SIGMA = 6;      // a jump this many σ (of a difference) is a step the background may follow
 const PRESENT_SIGMA = 4;   // a companion "has" a feature if it stands this many σ above its background
 const LN2 = Math.LN2;
 
@@ -105,7 +114,7 @@ export function despike(x, y, { threshold = 6, maxWidth = 15, minBandCm = null, 
   info.shotNoise = nm.alpha;
   const ctx = { n, sigma, threshold, minBandPts, pad: Math.max(5, Math.ceil(2 * minBandPts) + 2), nm, mw };
 
-  const accepted = [];                       // [a, b, misfit]
+  const accepted = [];                       // removed spans { a, b, misfit, height }
   const work = Float64Array.from(Y);
   let last = [];                             // the final pass's candidates, judged on the cleaned data
   if (scales.length) {
@@ -114,9 +123,18 @@ export function despike(x, y, { threshold = 6, maxWidth = 15, minBandCm = null, 
       // the join of the interpolation, not data (a spike's own shoulders were
       // already kept by trim()).
       const gap = pass ? 1 : 0;
-      const cands = candidates(work, sigma, threshold, scales)
+      const cands = candidates(work, nm, threshold, scales)
         .filter(([a, b]) => !accepted.some(s => a <= s.b + gap && b >= s.a - gap))
         .map(([a, b]) => ({ a, b, ...classify(work, a, b, ctx) }));
+      // A spike on a band top often only shows up inside a wider candidate that
+      // takes in the band: the runs standing clear above that candidate's best
+      // band model are judged as candidates of their own.
+      for (const c of cands.slice()) {
+        for (const [p, q] of c.outliers || []) {
+          if (q - p >= c.b - c.a || cands.some(d => d.a === p && d.b === q)) continue;
+          cands.push({ a: p, b: q, ...classify(work, p, q, ctx) });
+        }
+      }
       last = cands;
       const before = accepted.length;
       greedy(work, cands, accepted, ctx);
@@ -160,7 +178,7 @@ export function despike(x, y, { threshold = 6, maxWidth = 15, minBandCm = null, 
   }
 
   accepted.sort((p, q) => p.a - q.a);
-  for (const s of accepted) fill(out, s.a, s.b);
+  for (const s of accepted) fillSmooth(out, s.a, s.b);
   for (const s of accepted) result.spikes.push(event(X, s.a, s.b, s.height, { kind: s.kind, misfit: s.misfit, share: s.share ?? null }));
 
   // user zaps, on top of the automatic result
@@ -210,7 +228,7 @@ function event(X, a, b, h, extra) {
   return { start: a, end: b, xStart: X[a], xEnd: X[b], height: h, kind: 'cosmic', misfit: null, share: null, ...extra };
 }
 
-/** Remove candidates, least band-like first; re-test the ones a removal touched. */
+/** Remove spikes, tallest first; re-judge the candidates a removal touched. */
 function greedy(work, cands, accepted, ctx) {
   let pool = cands.filter(c => c.event);
   while (pool.length) {
@@ -222,29 +240,43 @@ function greedy(work, cands, accepted, ctx) {
     let take = [best];
     // A wide candidate with smaller spikes inside: is it still not a band without them?
     const inner = pool.filter(c => c !== best && c.spike && c.a >= best.a && c.b <= best.b && (c.b - c.a) < (best.b - best.a));
-    if (inner.length) {
-      const tmp = Float64Array.from(work);
-      for (const c of inner) fill(tmp, c.a, c.b);
-      const rest = classify(tmp, best.a, best.b, ctx);
-      // Keep the rest only if it is a band carrying the spike: band-like, and
-      // standing above the background on both sides of the spike.
-      if (!rest.event || (!rest.spike && carries(tmp, best, inner, rest, ctx))) take = inner;
-    }
+    if (inner.length && keepsRest(work, best, inner, ctx)) take = inner;
+    // Then each span is cut down to its spike core where it can be: the runs
+    // standing clear above its best band model, if what is left is a band
+    // carrying them. On a strong narrow band no smaller candidate may exist at
+    // all (the band top beats the small-scale predictors too), so this is the
+    // only way a spike on its apex comes off without the band.
+    take = take.flatMap(c => {
+      const core = (c.outliers || []).filter(([p, q]) => q - p < c.b - c.a && prominent(work, p, q, ctx))
+        .map(([p, q]) => ({ a: p, b: q, misfit: c.misfit, height: c.height }));
+      return core.length && keepsRest(work, c, core, ctx) ? core : [c];
+    });
     // trim to the raised points, then merge overlaps (inner candidates may nest)
-    const spans = take.map(c => { const [a, b] = trim(work, c.a, c.b, ctx); return { a, b, misfit: c.misfit, height: c.height }; })
-      .sort((p, q) => p.a - q.a);
+    const spans = take.map(c => { const t = trim(work, c.a, c.b, ctx); return t && { a: t[0], b: t[1], misfit: c.misfit, height: c.height }; })
+      .filter(Boolean).sort((p, q) => p.a - q.a);
     const merged = [];
     for (const s of spans) {
       const last = merged[merged.length - 1];
       if (last && s.a <= last.b + 1) { last.b = Math.max(last.b, s.b); last.misfit = Math.max(last.misfit, s.misfit); last.height = Math.max(last.height, s.height); }
       else merged.push({ ...s });
     }
-    for (const s of merged) fill(work, s.a, s.b);
+    for (const s of merged) fillSmooth(work, s.a, s.b);
     accepted.push(...merged);
+    if (!merged.length) { pool = pool.filter(c => c !== best && !take.includes(c)); continue; }
     const lo = Math.min(...merged.map(t => t.a)) - ctx.pad, hi = Math.max(...merged.map(t => t.b)) + ctx.pad;
     pool = pool.filter(c => c !== best && !take.includes(c) && !merged.some(s => c.a <= s.b && c.b >= s.a));
     pool = pool.map(c => (c.b >= lo && c.a <= hi ? { a: c.a, b: c.b, ...classify(work, c.a, c.b, ctx) } : c)).filter(c => c.event);
   }
+}
+
+/** Once the inner spans are filled, is what is left of `outer` either nothing at
+ *  all or a band carrying them (band-like, raised on both sides)? Then only the
+ *  inner spans are spikes. */
+function keepsRest(work, outer, inner, ctx) {
+  const tmp = Float64Array.from(work);
+  for (const c of inner) fillSmooth(tmp, c.a, c.b);
+  const rest = classify(tmp, outer.a, outer.b, ctx);
+  return !rest.event || (!rest.spike && carries(tmp, outer, inner, rest, ctx));
 }
 
 /** Does what is left of `outer` once `inner` is filled rise above the background on both sides of it? */
@@ -262,17 +294,19 @@ function carries(tmp, outer, inner, rest, ctx) {
 }
 
 /** Hole-predictor candidates at every scale: [start, end] runs. */
-function candidates(W, sigma, threshold, scales) {
+function candidates(W, nm, threshold, scales) {
   const n = W.length, found = new Map();
   for (const hw of scales) {
     const P = predictorWeights(hw);
     const r = new Float64Array(n), z = new Float64Array(n);
     // z = excess / (σ · gain): the prediction carries noise of its own, so the
-    // residual's spread is σ·gain, not σ.
+    // residual's spread is σ·gain, not σ. σ is taken at the predicted level
+    // (shot noise): on a strong band top the noise is larger than on the floor,
+    // and against the floor's σ the whole top would stand out, hiding a spike on it.
     for (let k = 0; k < n; k++) {
       const [pred, gain] = predict(W, k, hw, P);
       r[k] = W[k] - pred;
-      z[k] = r[k] / (sigma * gain);
+      z[k] = r[k] / (Math.sqrt(nm.s2 + nm.alpha * Math.max(0, pred - nm.L0)) * gain);
     }
     for (let k = 0; k < n; k++) {
       if (!(z[k] > threshold)) continue;
@@ -306,21 +340,34 @@ function classify(Y, a, b, ctx) {
   const t = new Float64Array(m), yy = new Float64Array(m);
   const mid = (lo + hi) / 2, half = Math.max(1, (hi - lo) / 2);
   for (let i = 0; i < m; i++) { t[i] = (lo + i - mid) / half; yy[i] = Y[lo + i]; }
-  // Quadratic background (the flank or top of a broad band, a fluorescence
-  // slope) plus non-negative local bands no wider than half the window: a
-  // broader band is the background's job, and a broad band with curvature
-  // subtracted could otherwise fake a peak narrower than minBand.
+  // Background: a quadratic (the flank or top of a broad band, a fluorescence
+  // slope), plus a step where the window holds a real jump outside the
+  // candidate (the join of an extended scan, a filter edge). A step cannot
+  // make both edges of a spike, only explain the data beside it.
   const bg = [Float64Array.from(t, () => 1), t, Float64Array.from(t, v => v * v)];
-  const s2 = sigma * sigma;
-  // The band explaining a candidate may be a neighbour whose flank it sits on,
-  // so centres range over the whole window; the second band of a pair is the local one.
-  const cLo = lo, cHi = hi, nLo = Math.max(0, a - 1), nHi = Math.min(n - 1, b + 1);
+  let jStep = -1, dMax = 0;
+  for (let i = lo + 1; i <= hi; i++) {
+    if (i >= a && i <= b + 1) continue;                     // the candidate's own edges
+    const d = Math.abs(Y[i] - Y[i - 1]);
+    if (d > dMax) { dMax = d; jStep = i; }
+  }
+  if (jStep > lo && dMax > STEP_SIGMA * Math.SQRT2 * sigma) bg.push(Float64Array.from({ length: m }, (_, i) => (lo + i >= jStep ? 1 : 0)));
+  const nb = bg.length, s2 = sigma * sigma;
+  // Bands are non-negative pseudo-Voigts no wider than half the window: a
+  // broader band is the background's job, and a broad band with curvature
+  // subtracted could otherwise fake a peak narrower than minBand. The band
+  // explaining a candidate may be a neighbour whose flank it sits on, even one
+  // centred beyond the window (but inside the data: at an array end a band just
+  // outside the range could mimic a spike on the first point), so centres range
+  // that far; the second band of a pair is the local one, near the candidate.
+  const ext = Math.ceil(m / 2);
+  const cLo = Math.max(0, lo - ext), cHi = Math.min(n - 1, hi + ext), nLo = Math.max(0, a - 1), nHi = Math.min(n - 1, b + 1);
   const wMax = Math.max(minBandPts, m / 2);
   const widths = [];
-  for (let w = minBandPts; w <= wMax * 1.0001; w *= 1.3) widths.push(w);
-  if (widths[widths.length - 1] < wMax * 0.97) widths.push(wMax);
-  // The grid search ranks models by their unweighted residual (cheap: see
-  // fastSSR); only the winner is refitted with the shape-tolerance weights.
+  for (let w = minBandPts; w <= wMax * 1.0001; w *= 1.5) widths.push(w);
+  if (widths[widths.length - 1] < wMax * 0.95) widths.push(wMax);
+  // The search ranks models by their unweighted residual (cheap: see fastSSR);
+  // only the winner is refitted with the shape-tolerance weights.
   const ssr = fastSSR(bg, yy);
   const cache = new Map();
   const prof = (c, w, eta) => {
@@ -329,50 +376,100 @@ function classify(Y, a, b, ctx) {
     if (!p) { p = ssr.column(Float64Array.from({ length: m }, (_, i) => pv(lo + i - c, w, eta))); cache.set(key, p); }
     return p;
   };
+  const cost = spec => ssr(spec.map(q => prof(q[0], q[1], q[2])));
+  const valid = spec => spec.every(([c, w, e], k) => w >= minBandPts * 0.9999 && w <= wMax * 1.0001 && e >= 0 && e <= 1
+    && (spec.length === 2 && k === 0 ? c >= nLo - 0.5 && c <= nHi + 0.5 : c >= cLo && c <= cHi));
+  // Coordinate search with shrinking steps on every centre, width and shape:
+  // the grid alone leaves a few per cent of misfit on a strong narrow band.
+  const refine = spec => {
+    let cur = spec.map(q => q.slice()), curS = cost(cur);
+    for (let r = 0; r < 4; r++) {
+      const dc = 0.25 / 2 ** r, fw = 1.1 ** (1 / 2 ** r), de = 0.25 / 2 ** r;
+      for (let it = 0; it < 8; it++) {
+        let moved = false;
+        for (let k = 0; k < cur.length; k++) {
+          const q = cur[k];
+          for (const [i, v] of [[0, q[0] - dc], [0, q[0] + dc], [1, q[1] / fw], [1, q[1] * fw], [2, q[2] - de], [2, q[2] + de]]) {
+            const trial = cur.map(z => z.slice());
+            trial[k][i] = v;
+            if (!valid(trial)) continue;
+            const s = cost(trial);
+            if (s < curS * (1 - 1e-12)) { cur = trial; curS = s; moved = true; }
+          }
+        }
+        if (!moved) break;
+      }
+    }
+    return cur;
+  };
   const judge = spec => {
-    const r = fitChi(bg, yy, s2, spec.map(q => prof(...q).p), true);
+    const r = fitChi(bg, yy, s2, spec.map(q => prof(q[0], q[1], q[2]).p), true);
     let rel = 0;
     for (let i = Math.max(lo, a - 1); i <= Math.min(hi, b + 1); i++) rel = Math.max(rel, Math.abs(r.resid[i - lo]) / h);
-    return { misfit: wilsonHilferty(r.chi, m - 3 - 3 * spec.length), rel };
+    // A spike's misfit sits on the candidate; over the whole window it is
+    // diluted by the background points, so the candidate and its neighbours are
+    // tested on their own too and the stronger verdict counts.
+    let cl = 0, k = 0;
+    for (let i = Math.max(lo, a - 2); i <= Math.min(hi, b + 2); i++) { cl += r.resid[i - lo] ** 2 * r.w[i - lo]; k++; }
+    // Where the data stand clear above the best real-band model is where a spike
+    // would be: those runs are offered to greedy() as the spike inside this candidate.
+    const out = [];
+    for (let i = a; i <= b; i++) {
+      if (!(r.resid[i - lo] * Math.sqrt(r.w[i - lo]) > INNER_SIGMA)) continue;
+      const last = out[out.length - 1];
+      if (last && last[1] === i - 1) last[1] = i; else out.push([i, i]);
+    }
+    return { misfit: Math.max(wilsonHilferty(r.chi, m - nb - 3 * spec.length), wilsonHilferty(cl, k - 1)), rel, out };
   };
 
-  // one band: coarse grid, then refine centre and width around the best
-  let best1 = { s: Infinity, spec: null };
-  const try1 = (c, w, eta) => {
-    const s = ssr([prof(c, w, eta)]);
-    if (s < best1.s) best1 = { s, spec: [[c, w, eta]], c, w, eta };
-  };
-  for (const eta of [0, 0.5, 1]) for (const w of widths) for (let c = cLo; c <= cHi + 1e-9; c += 0.5) try1(c, w, eta);
-  if (!best1.spec) return none;
-  {
-    const { c: c0, w: w0, eta: e0 } = best1;
-    for (let c = c0 - 0.375; c <= c0 + 0.375 + 1e-9; c += 0.125) {
-      if (c < cLo || c > cHi) continue;
-      for (const f of [0.86, 0.93, 1, 1.07, 1.16]) { const w = w0 * f; if (w >= minBandPts * 0.9999 && w <= wMax * 1.0001) try1(c, w, e0); }
-    }
+  // one band: a coarse grid (whole points, Gaussian or Lorentzian), then the
+  // two best starting points refined; the refinement does the fine work
+  const seeds = [];
+  for (const eta of [0, 1]) for (const w of widths) for (let c = Math.ceil(cLo); c <= cHi; c += 1) {
+    const s = cost([[c, w, eta]]);
+    if (seeds.length < 2 || s < seeds[1].s) { seeds.push({ s, spec: [[c, w, eta]] }); seeds.sort((p, q) => p.s - q.s); seeds.length = Math.min(2, seeds.length); }
   }
-  let { misfit, rel } = judge(best1.spec);
+  if (!seeds.length || !isFinite(seeds[0].s)) return none;
+  const fits = seeds.map(sd => refine(sd.spec)).map(sp => ({ sp, s: cost(sp) })).sort((p, q) => p.s - q.s);
+  let { misfit, rel, out } = judge(fits[0].sp);
 
   // Two bands (doublets, a narrow band on the flank of another) can only rescue
   // a feature the single band failed on, so they are tried only then.
-  if (misfit > Z_CRIT && rel > REL_MIN) {
+  if (!isBand(misfit, rel)) {
     const w2 = [...new Set([minBandPts, Math.min(wMax, 2 * minBandPts), wMax])];
-    let best2 = { s: Infinity, spec: null };
+    let best2 = null, sb = Infinity;
     for (let c1 = nLo; c1 <= nHi + 1e-9; c1 += 0.5) {
       for (let c2 = cLo; c2 <= cHi + 1e-9; c2 += 0.5) {
         if (Math.abs(c2 - c1) < 0.5) continue;
         for (const wa of w2) for (const wb of w2) {
-          const s = ssr([prof(c1, wa, 0.5), prof(c2, wb, 0.5)]);
-          if (s < best2.s) best2 = { s, spec: [[c1, wa, 0.5], [c2, wb, 0.5]] };
+          const s = cost([[c1, wa, 0.5], [c2, wb, 0.5]]);
+          if (s < sb) { sb = s; best2 = [[c1, wa, 0.5], [c2, wb, 0.5]]; }
         }
       }
     }
-    if (best2.spec) {
-      const j2 = judge(best2.spec);
-      if (j2.misfit < misfit) ({ misfit, rel } = j2);
+    if (best2) {
+      const j2 = judge(refine(best2));
+      if (j2.misfit < misfit) ({ misfit, rel, out } = j2);
     }
   }
-  return { event: true, spike: misfit > Z_CRIT && rel > REL_MIN, height: h, misfit, rel };
+  // Whatever the model says, a spike stands above its own neighbours.
+  return { event: true, spike: prominent(Y, a, b, ctx, sigma) && !isBand(misfit, rel), height: h, misfit, rel, outliers: out };
+}
+
+/** Does y[a..b] rise more than PROM_SIGMA σ above the higher of its two neighbours? */
+function prominent(Y, a, b, ctx, sigma = localSigma(Y, a, b, ctx)) {
+  const n = Y.length;
+  let top = -Infinity;
+  for (let i = a; i <= b; i++) top = Math.max(top, Y[i]);
+  return top - Math.max(a > 0 ? Y[a - 1] : -Infinity, b < n - 1 ? Y[b + 1] : -Infinity) > PROM_SIGMA * sigma;
+}
+
+/** Can the best real-band model stand? It cannot if it misses the feature both
+ *  significantly and materially: z > Z_CRIT with REL_MIN of the height, or a
+ *  gross miss (REL_GROSS) at z > Z_GROSS. No band at least minBand wide misses
+ *  by that much: even with noise it fits within a few per cent. */
+function isBand(misfit, rel) {
+  return !((misfit > Z_CRIT && rel > REL_MIN) || (misfit > Z_GROSS && rel > REL_GROSS));
 }
 
 /**
@@ -440,12 +537,13 @@ function gaussJordan(A, k, out) {
   return true;
 }
 
-/** Shrink a spike run to where it breaks away from the data around it. An end
+/** Shrink a spike run to where it breaks away from the data around it (null if
+ *  its top does not break away on either side: a smooth bump, not a spike). An end
  *  point that continues the trend of the CONT points beyond it (a straight-line
  *  extrapolation, within CONT_SIGMA of its noise) belongs to the signal, e.g. the
  *  flank of a band the spike sits on; the spike starts at the first jump. So a
  *  tall spike keeps its shoulders and a band under it is not taken along. */
-const CONT = 4, CONT_SIGMA = 4;
+const CONT = 4, CONT_SIGMA = 4, GROW = 2;
 const CONT_W = (() => {
   // least-squares line through offsets 1…CONT, extrapolated to offset 0
   const ts = Array.from({ length: CONT }, (_, i) => i + 1);
@@ -453,16 +551,38 @@ const CONT_W = (() => {
   const w = ts.map(t => (SS - S * t) / (CONT * SS - S * S));
   return { w, gain: Math.sqrt(1 + w.reduce((p, q) => p + q * q, 0)) };
 })();
+const CONT_Q = (() => {
+  // least-squares parabola through offsets 1…CONT, extrapolated to offset 0:
+  // follows a band's accelerating rise, which the straight line undershoots
+  const ts = Array.from({ length: CONT }, (_, i) => i + 1);
+  const w = ts.map((_, j) => solve([ts.map(() => 1), ts, ts.map(t => t * t)], ts.map((__, k) => (k === j ? 1 : 0)), null)[0]);
+  return { w, gain: Math.sqrt(1 + w.reduce((p, q) => p + q * q, 0)) };
+})();
 function trim(Y, a, b, ctx) {
   const { n } = ctx;
-  const tol = CONT_SIGMA * CONT_W.gain * localSigma(Y, a, b, ctx);
-  const pred = (i, dir) => {
+  const sig = localSigma(Y, a, b, ctx), tol = CONT_SIGMA * CONT_W.gain * sig;
+  const ext = (W, i, dir) => {
     let v = 0;
-    for (let k = 0; k < CONT; k++) { const j = i - dir * (k + 1); if (j < 0 || j >= n) return Infinity; v += CONT_W.w[k] * Y[j]; }
+    for (let k = 0; k < CONT; k++) { const j = i - dir * (k + 1); if (j < 0 || j >= n) return Infinity; v += W.w[k] * Y[j]; }
     return v;
   };
-  while (a < b && Y[a] - pred(a, 1) < tol) a++;
-  while (b > a && Y[b] - pred(b, -1) < tol) b--;
+  const pred = (i, dir) => ext(CONT_W, i, dir);
+  // Growing needs the point to clear the curved trend too (on a band's
+  // accelerating flank it does not). The parabola's extrapolation is noisier,
+  // and it only has to rule out that flank, so half the margin is enough.
+  const breaks = (i, dir) => Y[i] - pred(i, dir) >= tol && Y[i] - ext(CONT_Q, i, dir) >= 0.5 * CONT_SIGMA * CONT_Q.gain * sig;
+  // never past the top: the highest point is the spike if anything is, and if
+  // it continues the trend on both sides there is no spike here at all
+  let top = a;
+  for (let i = a + 1; i <= b; i++) if (Y[i] > Y[top]) top = i;
+  if (Y[top] - pred(top, 1) < tol && Y[top] - pred(top, -1) < tol) return null;
+  while (a < top && Y[a] - pred(a, 1) < tol) a++;
+  while (b > top && Y[b] - pred(b, -1) < tol) b--;
+  // The same test outward: a neighbour that breaks away from the data beyond it
+  // is the spike's own shoulder, missed by the candidate run (at most GROW points
+  // a side, so a removal never creeps up the flank of a band).
+  for (let k = 0; k < GROW && a > 0 && breaks(a - 1, 1); k++) a--;
+  for (let k = 0; k < GROW && b < n - 1 && breaks(b + 1, -1); k++) b++;
   return [a, b];
 }
 
@@ -539,7 +659,7 @@ function fitChi(bg, yy, s2, bands, wantResid = false) {
       chi += r * r * w[i];
     }
     if (pass === 0) w = Float64Array.from(bandSig, v => 1 / (s2 + (SHAPE_TOL * Math.min(Math.max(v, 0), cap)) ** 2));
-    else if (wantResid) return { chi, resid };
+    else if (wantResid) return { chi, resid, w };
   }
   return chi;
 }
@@ -645,13 +765,29 @@ function noiseModel(Y, sigma) {
   return { alpha, L0, s2 };
 }
 
-/** Noise σ for the window around a..b, at the window's own signal level. */
+/** Noise σ for the window around a..b: the larger of the model's value at the
+ *  window's signal level and the spread actually seen there (robust σ of the
+ *  second differences outside the candidate), so a noisy band top is never
+ *  judged against the quieter floor. */
 function localSigma(Y, a, b, { n, pad, nm }) {
-  if (!nm.alpha) return Math.sqrt(nm.s2);
-  const lo = Math.max(0, a - pad), hi = Math.min(n - 1, b + pad), v = [];
+  const lo = Math.max(0, a - pad), hi = Math.min(n - 1, b + pad), v = [], d = [];
   for (let i = lo; i <= hi; i++) if (i < a || i > b) v.push(Y[i]);
+  // Third differences (−1 3 −3 1) over a wider stretch: blind to a band's local
+  // curvature, which second differences would count as noise on a flank or a
+  // top (variance 20 σ²), and enough of them (~40) that taking the larger of
+  // this and the model does not bias the noise upward.
+  const lo3 = Math.max(1, a - 3 * pad), hi3 = Math.min(n - 3, b + 3 * pad);
+  for (let i = lo3; i <= hi3; i++) if (i + 2 < a - 1 || i - 1 > b + 1) d.push(Y[i + 2] - 3 * Y[i + 1] + 3 * Y[i] - Y[i - 1]);
   const level = v.length ? median(v) : Y[a];
-  return Math.sqrt(nm.s2 + nm.alpha * Math.max(0, level - nm.L0));
+  const model = Math.sqrt(nm.s2 + nm.alpha * Math.max(0, level - nm.L0));
+  if (d.length < 12) return model;
+  // 30th percentile of the absolute deviations (0.3853 σ for Gaussian noise):
+  // a nearby spike or shoulder, which only adds large values, cannot inflate it
+  // until it covers most of the window.
+  const md = median(d);
+  const dev = Float64Array.from(d, x => Math.abs(x - md)).sort();
+  const seen = dev[Math.floor(0.3 * (dev.length - 1))] / 0.3853 / Math.sqrt(20);
+  return Math.max(model, seen);
 }
 
 function medianSpacing(X) {
@@ -714,6 +850,21 @@ function predict(Y, k, hw, W) {
     v += W.one[i] * Y[j];
   }
   return [v, W.oneGain];
+}
+
+/** Replace a short run (≤ 3 points) by a quadratic through the 2 clean points on
+ *  each side, so a spike on a band top is replaced by the band's curvature, not
+ *  a chord under it; longer runs (where a quadratic would amplify the noise) and
+ *  runs near an array end fall back to linear interpolation. */
+function fillSmooth(arr, a, b) {
+  const n = arr.length, K = 2;
+  if (b - a + 1 > 3 || a - K < 0 || b + K >= n) return fill(arr, a, b);
+  const ts = [], vs = [];
+  for (let i = a - K; i < a; i++) { ts.push(i - a); vs.push(arr[i]); }
+  for (let i = b + 1; i <= b + K; i++) { ts.push(i - a); vs.push(arr[i]); }
+  const c = solve([ts.map(() => 1), ts, ts.map(t => t * t)], vs, null);
+  if (!c) return fill(arr, a, b);
+  for (let i = a; i <= b; i++) { const t = i - a; arr[i] = c[0] + c[1] * t + c[2] * t * t; }
 }
 
 /** Replace a..b by linear interpolation between the clean neighbours. */

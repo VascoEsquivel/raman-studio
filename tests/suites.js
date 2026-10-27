@@ -22,6 +22,7 @@ export const SUITES = [
   'match.matcher.test.js',
   'analysis.ratios.test.js',
   'analysis.workflow.test.js',
+  'analysis.acquisition.test.js',
   'render.layout.test.js',
   'sample.synth.test.js',
   'export.csv.test.js',

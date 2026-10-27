@@ -64,3 +64,23 @@ test('settings objects are not mutated', () => {
   runPipeline(sample(), s);
   assertEqual(JSON.stringify(s), JSON.stringify({ despike: { on: true, threshold: 8 } }));
 });
+
+test('despike defaults and options reach despike: companions (cropped with the data), edits, useSet', () => {
+  assertEqual(DEFAULT_SETTINGS.despike.maxWidth, 15);
+  assertEqual(DEFAULT_SETTINGS.despike.minBandCm, 0);
+  assertEqual(DEFAULT_SETTINGS.despike.useSet, true);
+  const base = (seed, hot = true) => { const r = rng(seed); const y = Float64Array.from(X, () => 300 + 5 * gauss(r)); if (hot) y[400] += 200; return y; };
+  const comps = [1, 2, 3, 4, 5, 6].map(k => base(10 + k));
+  const s = { x: X, y: base(3) };
+  const crop = { crop: { on: true, lo: X[100], hi: X[899] } };
+  const p = runPipeline(s, crop, { companions: comps });
+  assertEqual(p.despikeInfo.companions, 6, 'companions used after cropping');
+  const e = p.spikes.find(q => Math.abs(q.xStart - X[400]) < 1e-9);
+  assert(e && e.kind === 'artifact', 'hot pixel shared by every spectrum is an artifact');
+  const off = runPipeline(s, { ...crop, despike: { useSet: false } }, { companions: comps });
+  assertEqual(off.despikeInfo.companions, 0, 'useSet off ignores them');
+  assertEqual(off.spikes.find(q => Math.abs(q.xStart - X[400]) < 1e-9).kind, 'cosmic');
+  const kept = runPipeline(s, crop, { companions: comps, spikeEdits: { keep: [X[400]] } });
+  assert(kept.restored.some(q => q.kind === 'kept'), 'keep edit applied');
+  assert(Array.isArray(p.suspects) && Array.isArray(p.restored), 'suspects and restored returned');
+});

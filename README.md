@@ -25,9 +25,14 @@ app is static files on GitHub Pages: no server, no account, no build step.
    can't tell which column is the Raman shift, it shows a small column-mapping
    preview instead of failing.
 2. **Clean** with the signal chain under the plot. Each module has its own switch:
-   - **Despike** removes 1–3 point cosmic-ray spikes (modified z-score plus a
-     width test, so real bands are never touched). Removed spikes are marked on
-     the plot.
+   - **Despike** removes cosmic rays, including multi-point tracks, without
+     touching real bands. A feature is removed only if no smooth band at least
+     the *narrowest real band* wide (default 3 data points), nor two overlapping
+     ones, can reproduce its shape within the noise. In a file with several
+     spectra on the same axis (a map or series) the others are a second opinion:
+     a feature they share is kept, or labelled a detector artifact when it is a
+     single repeating pixel. Removals are marked on the plot and listed in the
+     **Data** tab, where each can be kept, and any range can be zapped by hand.
    - **Baseline**: constant, linear or quadratic, as in PeakForge, or asymmetric
      least squares for curved fluorescence.
    - **Smooth**: optional Savitzky–Golay.
@@ -39,7 +44,8 @@ app is static files on GitHub Pages: no server, no account, no build step.
    naive local maxima. The **sensitivity** slider sets the prominence threshold as a
    multiple of the measured noise.
 4. **Label.** Each peak is matched to the atlas band whose window contains it, with
-   a confidence that falls off with distance from the atlas centre:
+   a match score that falls off with distance from the atlas centre (1 at the
+   centre, about 0.14 at the window edge; a distance measure, not a probability):
    - Unmatched peaks stay on the plot as **unassigned**.
    - Peaks in the 2850–2920 cm⁻¹ window are tagged **sp³ C–H**, which the atlas
      says is not a lattice band.
@@ -56,9 +62,15 @@ app is static files on GitHub Pages: no server, no account, no build step.
    - **Ratios** computes the atlas ratio guide (height and area versions), with
      the Cançado crystallite size and Eckmann defect class.
    - **Read** walks the atlas's "read your own spectrum" steps using your numbers.
+   - **Data** shows the acquisition settings read from the file header (laser,
+     grating, exposure, accumulations, whether the instrument's own cosmic-ray
+     removal was on, laser power), quality warnings (saturated or clipped data),
+     and every spike removal.
 7. **Export:**
    - The figure as PNG (3×) or SVG, on white, with labels and legend.
-   - CSV files of the peak table, the fit parameters and the processed spectrum.
+   - CSV files of the peak table (with each peak's `match_score`), the fit
+     parameters and the processed spectrum (raw, baseline, corrected, final and
+     `despiked` columns).
    - A one-page printable report: figure, tables, ratios and interpretation.
    - A project JSON (<kbd>Ctrl</kbd>+<kbd>S</kbd>) that reopens exactly where you
      left off.
@@ -161,8 +173,8 @@ Module contracts are in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
   ([source](https://github.com/VascoEsquivel/Curve-gen)), its WiRE-compatible
   pseudo-Voigt profile and Levenberg–Marquardt fitter with trust bounds and
   uncertainties.
-- Peak detection follows SciPy's `find_peaks`. Despiking follows Whitaker & Hayes
-  (2018). The ALS baseline follows Eilers & Boelens (2005). The polynomial baseline
+- Peak detection follows SciPy's `find_peaks`. The despiking noise estimate follows
+  Whitaker & Hayes (2018). The ALS baseline follows Eilers & Boelens (2005). The polynomial baseline
   follows Lieber & Mahadevan-Jansen (2003).
 - [SheetJS](https://sheetjs.com) for spreadsheets. IBM Plex type via Google Fonts.
 
@@ -186,19 +198,24 @@ Module contracts are in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
   measured values for you to judge. It also doesn't count 2D components (to tell
   a monolayer from a bilayer). The evaluation is written for the graphene
   library only.
-- **Confidence is a distance score, not a probability.** It is
+- **The match score is a distance score, not a probability.** It is
   exp(−2(d/d_max)²) of the distance from the atlas centre within the match
-  window.
-- **Formats are tested against synthetic fixtures.** The fixtures are modelled
-  on WiRE, LabSpec, Excel, JCAMP-DX and SPC exports, not against files from
-  your instruments yet (put some in `test-data/private/`). SPC support covers
-  the new format only and is experimental. Wavelength (nm) x-axes are not
-  converted to Raman shift.
-- **Cosmic-ray removal is incomplete on real data.** It handles spikes up to 3
-  points wide; wider bursts, or a spike on a band narrower than about 5 points,
-  are left alone. On a real instrument spectrum tested in October 2026, some
-  spikes were not removed. This has not been diagnosed yet: the synthetic test
-  spikes are all removed, so the real file is needed to find out why.
+  window, shown as a number (never a percentage) and exported as `match_score`.
+- **Most formats are tested against synthetic fixtures.** WiRE SPC exports have
+  also been checked against real instrument files (values and header); the
+  other fixtures are modelled on WiRE, LabSpec, Excel and JCAMP-DX exports. SPC
+  support covers the new format only. Renishaw WDF files (and so WiRE maps) are
+  not read yet. Wavelength (nm) x-axes are not converted to Raman shift.
+- **Cosmic-ray removal rests on one assumption: the narrowest real band.** By
+  default a real band is at least 3 data points wide (FWHM). A real line
+  narrower than that, such as a silicon peak on a coarse grid, looks like a
+  spike in a single spectrum: lower *Narrowest band* in the Despike controls,
+  or keep it from the Data tab (in a map it is kept automatically, because
+  every spectrum has it). A 2–3 point cosmic ray shaped exactly like a band
+  just above that width can't be told from one by shape alone; it is left in
+  place and listed under "Worth a look". The method was checked on six real
+  WiRE maps and six point spectra (private lab data, not published) as well as
+  on synthetic stress cases; it is not a guarantee, so review the list.
 - **Multiple spectra** are compared visually (overlay or stacked). Processing,
   labels, ratios and exports apply to the spectrum currently selected; there is
   no batch export yet.

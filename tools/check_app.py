@@ -148,6 +148,29 @@ def main() -> int:
             page.click(".deck-tabs [data-tab=read]"); c.settle(300); c.shot("05_read")
             c.check(page.query_selector_all("#paneRead .step").__len__() == 8, "read pane shows the eight atlas workflow steps")
 
+            # data pane: acquisition, quality checks, the removal list with Keep / Zap
+            page.click(".deck-tabs [data-tab=data]"); c.settle(300); c.shot("05b_data")
+            rows = page.query_selector_all("#paneData .srow")
+            c.check(len(rows) == 3, f"data pane lists the GO sample's three cosmic rays (got {len(rows)})")
+            c.check("No saturation" in page.inner_text("#paneData"), "data pane: clean synthetic data passes the quality checks")
+            page.click("#paneData [data-spike=keep]"); c.settle(400)
+            c.check(page.evaluate("document.querySelector('[data-val=despike]').textContent.startsWith('2 removed')"), "Keep puts one removal back")
+            page.keyboard.press("Control+z"); c.settle(400)
+            c.check(page.evaluate("document.querySelector('[data-val=despike]').textContent.startsWith('3 removed')"), "Ctrl+Z undoes the Keep")
+            page.fill("#paneData [data-zapform] input[name=lo]", "1490")
+            page.fill("#paneData [data-zapform] input[name=hi]", "1500")
+            page.click("#paneData [data-zapform] button[type=submit]"); c.settle(400)
+            c.check("zapped" in page.inner_text("#paneData"), "a hand zap is listed")
+            page.keyboard.press("Control+z"); c.settle(400)
+            # match confidence is a score, never a percentage
+            page.click(".deck-tabs [data-tab=peaks]"); c.settle(300)
+            meta = page.evaluate("[...document.querySelectorAll('#panePeaks .pside .pane-meta')].map(e => e.textContent)")
+            c.check(meta and all("%" not in t for t in meta) and any(t.startswith("score ") for t in meta), f"peak list shows match scores, not percentages ({meta[:3]})")
+            # despike controls
+            page.click("[data-open=despike]"); c.settle(300)
+            c.check(page.query_selector(".pop [data-path='despike.minBandCm']") is not None, "despike popover has the narrowest-band control")
+            page.keyboard.press("Escape"); c.settle(200)
+
             # laser switch re-labels with shifted windows
             page.keyboard.press("3")
             c.settle()

@@ -1,4 +1,4 @@
-import { test, assert, assertEqual, rng, gauss } from './harness.js';
+import { test, assert, assertEqual, assertClose, rng, gauss } from './harness.js';
 import { despike } from '../js/process/despike.js';
 
 const N = 1200;
@@ -104,4 +104,158 @@ test('20 000 points despike in well under a second', () => {
   const out = despike(x, y);
   assert(performance.now() - t0 < 800, 'fast enough');
   assertEqual(out.spikes.length, 3);
+});
+
+// ---------------------------------------------------------------- model-based criteria
+// The cases below come from the 2026-10 review on real lab spectra (wide tracks
+// missed, narrow real bands removed by the old 3-point width cap) and from an
+// adversarial synthetic sweep.
+
+const gau = (x, c, w, h) => h * Math.exp(-4 * Math.LN2 * ((x - c) / w) ** 2);
+/** Shot noise: σ ∝ √signal, as on a CCD. */
+const shot = (y, seed) => { const r = rng(seed); return Float64Array.from(y, v => v + Math.sqrt(Math.max(v, 1)) * gauss(r)); };
+const hits = (r, lo, hi) => r.removed.filter(p => p.index >= lo && p.index <= hi).length;
+
+test('a wide jagged cosmic-ray track (9 points) is removed completely', () => {
+  const track = [200, 600, 850, 690, 770, 870, 830, 1500, 420];
+  for (const seed of [1, 2, 3]) {
+    const y = shot(Float64Array.from(X, () => 20), seed);
+    for (let k = 0; k < 9; k++) y[600 + k] += track[k];
+    const r = despike(X, y);
+    assertEqual(hits(r, 600, 608), 9, `seed ${seed}: all 9 points`);
+    assert(r.removed.every(p => p.index >= 598 && p.index <= 610), `seed ${seed}: nothing else`);
+    assertEqual(r.spikes.length, 1, `seed ${seed}: one event`);
+    assertEqual(r.spikes[0].kind, 'cosmic');
+  }
+});
+
+test('a track on top of a broad band is removed, the band under it is kept', () => {
+  const track = [200, 600, 850, 690, 770, 870, 830, 1500, 420];
+  const clean = shot(Float64Array.from(X, x => 100 + lor(x, 804, 40, 500)), 9);
+  const y = Float64Array.from(clean);
+  for (let k = 0; k < 9; k++) y[600 + k] += track[k];
+  const r = despike(X, y);
+  assertEqual(hits(r, 600, 608), 9, 'track removed');
+  assertEqual(r.removed.filter(p => p.index < 598 || p.index > 610).length, 0, 'band flanks untouched');
+  for (let i = 600; i <= 608; i++) assert(Math.abs(r.y[i] - clean[i]) < 60, `point ${i} restored near the band (${r.y[i]} vs ${clean[i]})`);
+});
+
+test('narrow strong real bands (FWHM 3–7 points, up to 20 000 counts, shot noise) are never touched', () => {
+  for (const w of [3, 3.5, 4, 5, 7]) for (const h of [200, 2000, 20000]) for (const seed of [1, 2, 3, 4]) {
+    const y = shot(Float64Array.from(X, x => 300 + lor(x, 500.3, w, h) + gau(x, 900.6, w, 0.7 * h)), 100 * w + seed);
+    const r = despike(X, y);
+    assertEqual(hits(r, 270, 330) + hits(r, 670, 730), 0, `FWHM ${w}, h ${h}, seed ${seed}`);
+  }
+});
+
+test('a close doublet of narrow bands is kept', () => {
+  for (const sep of [4, 5, 7]) for (const seed of [1, 2, 3]) {
+    const y = shot(Float64Array.from(X, x => 300 + lor(x, 600, 4, 1500) + lor(x, 600 + sep, 4, 1100)), seed + 10 * sep);
+    assertEqual(despike(X, y).removed.length, 0, `separation ${sep}, seed ${seed}`);
+  }
+});
+
+test('a narrow band on the steep flank of a broad one, and an asymmetric (Fano) band, are kept', () => {
+  for (const seed of [1, 2, 3]) {
+    const y = shot(Float64Array.from(X, x => 200 + lor(x, 600, 60, 5000) + lor(x, 630, 4, 600)), seed);
+    assertEqual(despike(X, y).removed.length, 0, `flank, seed ${seed}`);
+    const f = shot(Float64Array.from(X, x => { const e = 2 * (x - 600) / 15; return 200 + 3000 * (1 - e / 4) ** 2 / (1 + e * e); }), seed);
+    assertEqual(despike(X, f).removed.length, 0, `Fano, seed ${seed}`);
+  }
+});
+
+test('steps in the baseline (stitched scans) are not mistaken for spikes', () => {
+  for (const h of [50, 300, 3000]) for (const seed of [1, 2, 3]) {
+    const y = shot(Float64Array.from(X, x => 500 + (x >= 800 ? h : 0)), seed);
+    assertEqual(despike(X, y).removed.length, 0, `step ${h}, seed ${seed}`);
+  }
+});
+
+test('a spike on the apex of a narrow band: only the spike goes', () => {
+  const clean = shot(Float64Array.from(X, x => 200 + lor(x, 600, 6, 1200)), 4);
+  const y = Float64Array.from(clean); y[400] += 1500;
+  const r = despike(X, y);
+  assert(r.removed.some(p => p.index === 400), 'spike removed');
+  assert(r.removed.length <= 3, `at most the spike and a shoulder: ${r.removed.map(p => p.index)}`);
+  for (let i = 396; i <= 404; i++) {
+    if (r.removed.some(p => p.index === i)) assert(Math.abs(r.y[i] - clean[i]) < 0.1 * 1200, `point ${i} replaced within 10 % of the band (${Math.round(r.y[i])} vs ${Math.round(clean[i])})`);
+    else assert(r.y[i] === y[i], `point ${i} untouched`);
+  }
+});
+
+test('decisions do not depend on the intensity scale', () => {
+  const y = shot(Float64Array.from(X, x => 300 + lor(x, 500, 20, 900)), 3);
+  y[300] += 400; y[700] += 250; y[701] += 500;
+  for (let k = 0; k < 7; k++) y[950 + k] += [200, 500, 300, 700, 650, 1200, 300][k];
+  const key = r => r.removed.map(p => p.index).join(',');
+  const a = despike(X, y);
+  assert(a.spikes.length >= 3, 'three events found');
+  assertEqual(key(despike(X, y.map(v => v / 1e4))), key(a), 'scaled down');
+  assertEqual(key(despike(X, y.map(v => v * 1e3))), key(a), 'scaled up');
+});
+
+test('minBandCm: a 2-point-wide real line is removed under the 3-point default and kept when declared', () => {
+  const y = shot(Float64Array.from(X, x => 200 + gau(x, 520, 2, 3000)), 5);
+  const auto = despike(X, y), declared = despike(X, y, { minBandCm: 1.5 });
+  assert(hits(auto, 316, 324) > 0, 'auto (3 points) treats it as too sharp to be real');
+  assertEqual(hits(declared, 316, 324), 0, 'declared narrowest band 1.5 cm⁻¹ keeps it');
+  assertEqual(auto.info.minBandAuto, true); assertClose(auto.info.minBandCm, 3, 1e-9);
+  assertEqual(declared.info.minBandAuto, false); assertClose(declared.info.minBandPts, 1.5, 1e-9);
+});
+
+test('companions: a feature the other spectra share is real, a one-point one is a detector artifact', () => {
+  const N2 = 800, X2 = X.slice(0, N2);
+  const mk = (k, f) => shot(Float64Array.from(X2, f), 1000 + k);
+  // narrow line in every spectrum, too sharp for the default: put back as recurring
+  const si = k => mk(k, x => 100 + gau(x, 520, 2, 900 + 40 * k));
+  const r = despike(X2, si(50), { companions: [...Array(8)].map((_, k) => si(k)) });
+  assertEqual(hits(r, 316, 324), 0, 'shared narrow line kept');
+  assert(r.restored.some(e => e.kind === 'recurring' && e.share >= 0.2), 'reported as recurring');
+  assertEqual(r.info.companions, 8);
+  // hot pixel at the same index everywhere
+  const hp = k => { const v = mk(k, () => 100); v[700] += 300; return v; };
+  const r2 = despike(X2, hp(77), { companions: [...Array(8)].map((_, k) => hp(k)) });
+  const e = r2.spikes.find(s => s.start === 700);
+  assert(e && e.kind === 'artifact' && e.share > 0.5, 'labelled artifact');
+  // a cosmic ray on the apex of a band the companions share is still a cosmic ray
+  const band = k => mk(k, x => 100 + lor(x, 600, 30, 400 + 30 * k));
+  const comps3 = [...Array(8)].map((_, k) => band(k));
+  const y = band(99); y[399] += 1600; y[401] += 700;
+  const r3 = despike(X2, y, { companions: comps3 });
+  assert(r3.spikes.some(s => s.start <= 399 && s.end >= 399 && s.kind === 'cosmic'), 'still removed');
+  assertEqual(r3.restored.length, 0, 'not put back because the others have the band');
+  assert(r3.removed.every(p => p.index >= 398 && p.index <= 402), 'the band itself is kept');
+  // a bell-shaped 3-point spike there could be a ~2-point band: left in place but listed
+  const yb = band(99); yb[398] += 900; yb[399] += 1600; yb[400] += 500;
+  const r4 = despike(X2, yb, { companions: comps3 });
+  assert(r4.spikes.some(s => s.start <= 399 && s.end >= 399) || r4.suspects.some(s => s.start <= 399 && s.end >= 399 && s.share === 0),
+    'removed, or listed as unique to this spectrum');
+  // fewer than 4 companions are ignored
+  assertEqual(despike(X2, si(50), { companions: [si(1), si(2)] }).info.companions, 0);
+});
+
+test('edits: keep restores an automatic removal, zaps interpolate by hand', () => {
+  const y = shot(Float64Array.from(X, () => 100), 3); y[400] += 500;
+  assertEqual(despike(X, y).spikes.length, 1);
+  const kept = despike(X, y, { edits: { keep: [X[400]] } });
+  assertEqual(kept.spikes.length, 0);
+  assertEqual(kept.restored[0].kind, 'kept');
+  assert(kept.y[400] === y[400], 'value back');
+  const zapped = despike(X, y, { edits: { zaps: [[X[505], X[500]]] } });
+  const z = zapped.spikes.find(s => s.kind === 'manual');
+  assert(z && z.start === 500 && z.end === 505, 'zap range, ends in either order');
+  for (let i = 500; i <= 505; i++) assertClose(zapped.y[i], y[499] + (y[506] - y[499]) * (i - 499) / 7, 1e-9, `interpolated ${i}`);
+  assert(zapped.spikes.some(s => s.kind === 'cosmic'), 'automatic removal still there');
+});
+
+test('result shape: events, suspects, restored and info are always present', () => {
+  const y = shot(Float64Array.from(X, () => 100), 8); y[300] += 400;
+  const r = despike(X, y);
+  for (const k of ['y', 'removed', 'spikes', 'suspects', 'restored', 'info']) assert(k in r, k);
+  for (const k of ['sigma', 'shotNoise', 'spacing', 'minBandPts', 'minBandCm', 'minBandAuto', 'maxWidth', 'threshold', 'companions']) assert(k in r.info, 'info.' + k);
+  const s = r.spikes[0];
+  for (const k of ['start', 'end', 'xStart', 'xEnd', 'height', 'kind', 'misfit', 'share']) assert(k in s, 'spike.' + k);
+  assertEqual(s.xStart, X[s.start]);
+  const empty = despike([], []);
+  assertEqual(empty.spikes.length + empty.suspects.length + empty.restored.length, 0);
 });
