@@ -1,70 +1,279 @@
 /* Cosmic-ray (spike) removal.
 
-   Cosmic rays hit single detector pixels: 1–3 point, very sharp, positive
-   excursions. Real Raman bands are wider than the instrument line width, so
-   the job is to remove the former without ever touching the latter.
+   A cosmic ray dumps charge into one or a few detector pixels, sometimes along
+   a track that crosses many of them. What gives it away is not its width but
+   its shape: real Raman bands are smooth and at least as wide as the
+   instrument line shape, a cosmic ray is not. So the question asked of every
+   suspicious feature is "could a real band have produced this?", never "is it
+   narrow?" (an earlier version used a 3-point width cap: it missed wide tracks
+   on real data and removed narrow real bands in noisy map spectra).
 
-   1. Noise σ comes from the Whitaker–Hayes statistic: the median absolute
-      deviation of the point-to-point differences (robust to the bands
-      themselves), scaled to a Gaussian σ.
-   2. Every point is compared with a prediction from its surroundings that
-      leaves a HOLE over the point itself: a quadratic through the points
-      maxWidth+1 … maxWidth+5 samples away on each side. A spike up to maxWidth
-      wide is entirely inside the hole, so the prediction sees only the
-      underlying signal: flat background, a band flank or a broad band top.
-      Points whose excess over the prediction, in units of the residual's own
-      noise (σ × the predictor's noise gain), exceeds `threshold` are flagged.
-   3. Flagged runs are kept as spikes only if they are ≤ maxWidth points wide
-      AND their immediate neighbours are not elevated too (excess < half the
-      run's excess). That neighbour test is what protects real bands: plain
-      Whitaker–Hayes flags the steep flanks of narrow bands in low-noise data,
-      but a band — even a 5-point-FWHM one — lifts its neighbours, a cosmic ray
-      does not.
-   4. Two passes: the second masks the spikes found in the first, so a spike
-      can't distort the prediction for another one a few points away.
+   1. Candidates. Each point is compared with a prediction that leaves a HOLE
+      over it: a quadratic through the points hw+1 … hw+5 away on each side,
+      for hole half-widths hw from 1 up to maxWidth. Runs standing more than
+      `threshold` σ above the prediction (σ × the predictor's noise gain), no
+      wider than hw and not lifting their neighbours (excess < half the run's),
+      become candidates. σ is the Whitaker–Hayes noise: the median absolute
+      deviation of the point-to-point differences, scaled to a Gaussian σ.
+   2. Classification. In a window around the candidate a smooth model is
+      fitted by least squares: a quadratic background (a broad band's flank or
+      top, a fluorescence slope) plus one, or failing that two, non-negative
+      pseudo-Voigt bands with FWHM between `minBand` and half the window.
+      minBand is the narrowest real band: `minBandCm`, or by default
+      AUTO_MIN_BAND_PTS sample spacings. The noise per point grows with the
+      signal (shot noise, estimated from the spectrum itself) and is widened by
+      SHAPE_TOL of the band signal, because real line shapes are not perfect
+      pseudo-Voigts. A candidate is a spike only if the best model fails both
+      statistically (χ² Wilson–Hilferty deviate > Z_CRIT) and materially
+      (misses the feature by more than REL_MIN of its height): then no real
+      band can be there. Otherwise it stays.
+   3. Removal is greedy, tallest spike first; after each removal the
+      candidates whose windows it touched are judged again, so one spike cannot
+      make a nearby band look wrong. A wide candidate containing a smaller
+      spike is removed whole only if what remains once the small spike is gone
+      is still not a band standing on both sides of it: a band with a spike on
+      top keeps its band. A removal is trimmed to where it breaks away from the
+      surrounding data, so it keeps a spike's shoulders but not the band under it.
+   4. Companion spectra (the other spectra of the same map or series, on the
+      same axis) are a second opinion. A removed feature that the companions
+      show too (same peak point, similar profile) in at least RECUR of them is
+      not random: if it is one point wide it is a fixed-pattern detector
+      artifact (removed, and labelled as such), otherwise it is a real band and
+      is put back.
+   5. User edits: `keep` positions restore automatic removals; `zaps` ranges
+      are interpolated by hand.
+   Features that were left alone but look questionable (close to the spike
+   criteria, or with companions: unique to this spectrum and tall, or a
+   one-point artifact) are returned as `suspects` for a person to judge.
 
    Removed points are replaced by linear interpolation between the nearest
    clean neighbours (at an array edge: the nearest clean value). */
 
 const NEIGHBOUR_FRACTION = 0.5;
+const SCALES = [1, 2, 3, 5, 8, 12, 16, 20, 25];
+const AUTO_MIN_BAND_PTS = 3;
+const Z_CRIT = 4;          // χ² tail deviate above which no band explains a feature …
+const REL_MIN = 0.15;      // … provided the best band model also misses it by this share of its height
+const Z_SUSPECT = 2.5;     // kept, but close enough to Z_CRIT to show the user
+const SHAPE_TOL = 0.05;    // relative line-shape mismatch tolerated for real bands
+const RECUR = 0.2;         // share of companion spectra that makes a feature recurring
+const PRESENT_SIGMA = 4;   // a companion "has" a feature if it stands this many σ above its background
+const LN2 = Math.LN2;
 
 /**
  * Remove cosmic-ray spikes.
- * @param {ArrayLike<number>} x ascending Raman shift (used only to report positions)
+ * @param {ArrayLike<number>} x ascending Raman shift
  * @param {ArrayLike<number>} y intensity
- * @param {{threshold?:number, maxWidth?:number}} [opts] threshold: excess over the local
- *   prediction in noise σ (modified z-score); maxWidth: widest spike in points (1–5)
+ * @param {{threshold?:number, maxWidth?:number, minBandCm?:number|null,
+ *   companions?:ArrayLike<number>[]|null, edits?:{keep?:number[], zaps?:[number,number][]}|null}} [opts]
+ *   threshold: candidate excess over the local prediction in noise σ; maxWidth: widest spike in
+ *   points (1–25); minBandCm: narrowest real band FWHM in cm⁻¹ (null/0 = AUTO_MIN_BAND_PTS spacings);
+ *   companions: other spectra on the same x (≥ 4 used); edits: user keeps and zaps (cm⁻¹)
  * @returns {{y:Float64Array, removed:Array<{index:number,x:number,y:number,replacedY:number}>,
- *   spikes:Array<{start:number,end:number,xStart:number,xEnd:number,height:number}>}}
+ *   spikes:Array<{start:number,end:number,xStart:number,xEnd:number,height:number,kind:string,misfit:number|null,share:number|null}>,
+ *   suspects:Array<{start:number,end:number,xStart:number,xEnd:number,height:number,kind:string,misfit:number,share:number|null}>,
+ *   restored:Array<{start:number,end:number,xStart:number,xEnd:number,height:number,kind:string,share:number|null}>,
+ *   info:{sigma:number, shotNoise:number, spacing:number, minBandPts:number, minBandCm:number, minBandAuto:boolean,
+ *     maxWidth:number, threshold:number, companions:number}}}
+ *   spike kind: 'cosmic' | 'artifact' (one point, recurs in the companions) | 'manual' (zapped);
+ *   suspect kind: 'suspect' | 'artifact'; restored kind: 'kept' (user) | 'recurring' (companions
+ *   show the same feature); misfit: χ² deviate of the best real-band model; share: fraction of
+ *   companions showing the feature (null without companions); companions: number used (0 if < 4).
  */
-export function despike(x, y, { threshold = 6, maxWidth = 3 } = {}) {
+export function despike(x, y, { threshold = 6, maxWidth = 15, minBandCm = null, companions = null, edits = null } = {}) {
   const n = y ? y.length : 0;
   const Y = Float64Array.from(y || []);
+  const X = Float64Array.from(x && x.length === n ? x : Array.from({ length: n }, (_, i) => i));
   const out = Float64Array.from(Y);
-  const result = { y: out, removed: [], spikes: [] };
-  const hw = Math.max(1, Math.min(5, Math.round(maxWidth) || 3));
-  if (n < 2 * (hw + SYM) + 1) return result;    // too short to tell a spike from a band
+  const spacing = medianSpacing(X);
+  const auto = !(minBandCm > 0);
+  const minBandPts = Math.max(1, Math.min(50, auto ? AUTO_MIN_BAND_PTS : minBandCm / spacing));
+  const mw = Math.max(1, Math.min(25, Math.round(maxWidth) || 15));
+  const comps = (companions || []).filter(c => c && c.length === n);
+  const info = { sigma: 0, spacing, minBandPts, minBandCm: minBandPts * spacing, minBandAuto: auto,
+    maxWidth: mw, threshold, companions: comps.length >= 4 ? comps.length : 0 };
+  const result = { y: out, removed: [], spikes: [], suspects: [], restored: [], info };
+  const scales = SCALES.filter(h => h < mw).concat(mw).filter(h => n >= 2 * (h + SYM) + 1);
   for (let i = 0; i < n; i++) if (!Number.isFinite(Y[i])) return result;
 
   let lo = Infinity, hi = -Infinity;
   for (let i = 0; i < n; i++) { if (Y[i] < lo) lo = Y[i]; if (Y[i] > hi) hi = Y[i]; }
   // A noiseless spectrum has σ = 0; a floor keeps rounding error from ever counting as a spike.
-  const sigma = Math.max(noiseSigma(Y), 1e-4 * (hi - lo), 1e-300);
-  const W = predictorWeights(hw);
+  const sigma = n > 2 ? Math.max(noiseSigma(Y), 1e-4 * (hi - lo), 1e-300) : 1;
+  info.sigma = sigma;
+  const nm = noiseModel(Y, sigma);
+  info.shotNoise = nm.alpha;
+  const ctx = { n, sigma, threshold, minBandPts, pad: Math.max(5, Math.ceil(2 * minBandPts) + 2), nm, mw };
 
-  let runs = [];
-  let work = Y;
-  for (let pass = 0; pass < 3; pass++) {
-    // z = excess / (σ · gain): the prediction carries noise of its own, so the
-    // residual's spread is σ·gain, not σ. Comparing raw excess with threshold·σ
-    // would flag ~1 noise point in 5000.
+  const accepted = [];                       // [a, b, misfit]
+  const work = Float64Array.from(Y);
+  let last = [];                             // the final pass's candidates, judged on the cleaned data
+  if (scales.length) {
+    for (let pass = 0; pass < 4; pass++) {
+      // Later passes skip candidates touching a removal: what they see there is
+      // the join of the interpolation, not data (a spike's own shoulders were
+      // already kept by trim()).
+      const gap = pass ? 1 : 0;
+      const cands = candidates(work, sigma, threshold, scales)
+        .filter(([a, b]) => !accepted.some(s => a <= s.b + gap && b >= s.a - gap))
+        .map(([a, b]) => ({ a, b, ...classify(work, a, b, ctx) }));
+      last = cands;
+      const before = accepted.length;
+      greedy(work, cands, accepted, ctx);
+      if (accepted.length === before) break;
+    }
+  }
+
+  // spans found in different passes may touch (a spike's edge found once its top was gone)
+  accepted.sort((p, q) => p.a - q.a);
+  for (let i = accepted.length - 1; i > 0; i--) {
+    const p = accepted[i - 1], q = accepted[i];
+    if (q.a <= p.b + 1) {
+      p.b = Math.max(p.b, q.b); p.misfit = Math.max(p.misfit, q.misfit); p.height = Math.max(p.height, q.height);
+      accepted.splice(i, 1);
+    }
+  }
+
+  // second opinion from companion spectra
+  for (const s of accepted) s.kind = 'cosmic';
+  if (info.companions) {
+    for (let i = accepted.length - 1; i >= 0; i--) {
+      const s = accepted[i];
+      s.share = presence(Y, comps, s.a, s.b, ctx.pad);
+      if (s.share < RECUR) continue;
+      if (s.b === s.a) s.kind = 'artifact';
+      else {
+        result.restored.push(event(X, s.a, s.b, s.height, { kind: 'recurring', share: s.share }));
+        accepted.splice(i, 1);
+      }
+    }
+  }
+
+  // user keeps
+  const keep = (edits && edits.keep || []).filter(Number.isFinite);
+  for (let i = accepted.length - 1; i >= 0; i--) {
+    const s = accepted[i];
+    if (keep.some(k => k >= X[s.a] - spacing && k <= X[s.b] + spacing)) {
+      result.restored.push(event(X, s.a, s.b, s.height, { kind: 'kept', share: s.share ?? null }));
+      accepted.splice(i, 1);
+    }
+  }
+
+  accepted.sort((p, q) => p.a - q.a);
+  for (const s of accepted) fill(out, s.a, s.b);
+  for (const s of accepted) result.spikes.push(event(X, s.a, s.b, s.height, { kind: s.kind, misfit: s.misfit, share: s.share ?? null }));
+
+  // user zaps, on top of the automatic result
+  for (const z of (edits && edits.zaps) || []) {
+    if (!Array.isArray(z) || !Number.isFinite(z[0]) || !Number.isFinite(z[1])) continue;
+    const zl = Math.min(z[0], z[1]), zh = Math.max(z[0], z[1]);
+    let a = -1, b = -1;
+    for (let i = 0; i < n; i++) if (X[i] >= zl && X[i] <= zh) { if (a < 0) a = i; b = i; }
+    if (a < 0) continue;
+    const sp = result.spikes;
+    for (let i = sp.length - 1; i >= 0; i--) if (sp[i].start >= a && sp[i].end <= b) sp.splice(i, 1);
+    const h = height(Y, a, b, ctx);
+    fill(out, a, b);
+    sp.push(event(X, a, b, h, { kind: 'manual' }));
+  }
+  result.spikes.sort((p, q) => p.start - q.start);
+  const seen = new Set();
+  for (const s of result.spikes) for (let k = s.start; k <= s.end; k++) {
+    if (seen.has(k) || out[k] === Y[k]) continue;
+    seen.add(k);
+    result.removed.push({ index: k, x: X[k], y: Y[k], replacedY: out[k] });
+  }
+  result.removed.sort((p, q) => p.index - q.index);
+
+  // candidates left in place that a person should look at
+  const sus = [];
+  for (const c of last) {
+    const { a, b } = c;
+    if (!c.event || result.spikes.some(s => a <= s.end && b >= s.start) || result.restored.some(s => a <= s.end && b >= s.start)) continue;
+    const share = info.companions ? presence(Y, comps, a, b, ctx.pad) : null;
+    const recurring = share != null && share >= RECUR;
+    if (recurring && a !== b) continue;                     // the same feature in many spectra: a real band
+    const unique = share === 0 && c.height > 10 * localSigma(Y, a, b, ctx);
+    const fixed = recurring && a === b;
+    if ((c.misfit > Z_SUSPECT && c.rel > REL_MIN) || unique || fixed) {
+      sus.push(event(X, a, b, c.height, { kind: fixed ? 'artifact' : 'suspect', misfit: c.misfit, share }));
+    }
+  }
+  sus.sort((p, q) => (q.end - q.start) - (p.end - p.start));
+  for (const s of sus) if (!result.suspects.some(t => s.start <= t.end && s.end >= t.start)) result.suspects.push(s);
+  result.suspects.sort((p, q) => p.start - q.start);
+  result.restored.sort((p, q) => p.start - q.start);
+  return result;
+}
+
+function event(X, a, b, h, extra) {
+  return { start: a, end: b, xStart: X[a], xEnd: X[b], height: h, kind: 'cosmic', misfit: null, share: null, ...extra };
+}
+
+/** Remove candidates, least band-like first; re-test the ones a removal touched. */
+function greedy(work, cands, accepted, ctx) {
+  let pool = cands.filter(c => c.event);
+  while (pool.length) {
+    // Tallest first: a big spike distorts the predictions and windows of
+    // everything within a few points, so those are judged again without it.
+    let best = null;
+    for (const c of pool) if (c.spike && (!best || c.height > best.height)) best = c;
+    if (!best) break;
+    let take = [best];
+    // A wide candidate with smaller spikes inside: is it still not a band without them?
+    const inner = pool.filter(c => c !== best && c.spike && c.a >= best.a && c.b <= best.b && (c.b - c.a) < (best.b - best.a));
+    if (inner.length) {
+      const tmp = Float64Array.from(work);
+      for (const c of inner) fill(tmp, c.a, c.b);
+      const rest = classify(tmp, best.a, best.b, ctx);
+      // Keep the rest only if it is a band carrying the spike: band-like, and
+      // standing above the background on both sides of the spike.
+      if (!rest.event || (!rest.spike && carries(tmp, best, inner, rest, ctx))) take = inner;
+    }
+    // trim to the raised points, then merge overlaps (inner candidates may nest)
+    const spans = take.map(c => { const [a, b] = trim(work, c.a, c.b, ctx); return { a, b, misfit: c.misfit, height: c.height }; })
+      .sort((p, q) => p.a - q.a);
+    const merged = [];
+    for (const s of spans) {
+      const last = merged[merged.length - 1];
+      if (last && s.a <= last.b + 1) { last.b = Math.max(last.b, s.b); last.misfit = Math.max(last.misfit, s.misfit); last.height = Math.max(last.height, s.height); }
+      else merged.push({ ...s });
+    }
+    for (const s of merged) fill(work, s.a, s.b);
+    accepted.push(...merged);
+    const lo = Math.min(...merged.map(t => t.a)) - ctx.pad, hi = Math.max(...merged.map(t => t.b)) + ctx.pad;
+    pool = pool.filter(c => c !== best && !take.includes(c) && !merged.some(s => c.a <= s.b && c.b >= s.a));
+    pool = pool.map(c => (c.b >= lo && c.a <= hi ? { a: c.a, b: c.b, ...classify(work, c.a, c.b, ctx) } : c)).filter(c => c.event);
+  }
+}
+
+/** Does what is left of `outer` once `inner` is filled rise above the background on both sides of it? */
+function carries(tmp, outer, inner, rest, ctx) {
+  const { n, pad, minBandPts } = ctx;
+  const lo = Math.max(0, outer.a - pad), hi = Math.min(n - 1, outer.b + pad);
+  const base = baseLine(tmp, outer.a, outer.b, lo, hi);
+  const floor = Math.max(3 * localSigma(tmp, outer.a, outer.b, ctx), 0.1 * rest.height);
+  const iLo = Math.min(...inner.map(c => c.a)), iHi = Math.max(...inner.map(c => c.b));
+  let L = 0, R = 0;
+  for (let i = iLo - 1; i >= lo && tmp[i] - base(i) > floor; i--) L++;
+  for (let i = iHi + 1; i <= hi && tmp[i] - base(i) > floor; i++) R++;
+  const need = Math.max(1, Math.ceil(minBandPts / 2));
+  return L >= need && R >= need;
+}
+
+/** Hole-predictor candidates at every scale: [start, end] runs. */
+function candidates(W, sigma, threshold, scales) {
+  const n = W.length, found = new Map();
+  for (const hw of scales) {
+    const P = predictorWeights(hw);
     const r = new Float64Array(n), z = new Float64Array(n);
+    // z = excess / (σ · gain): the prediction carries noise of its own, so the
+    // residual's spread is σ·gain, not σ.
     for (let k = 0; k < n; k++) {
-      const [pred, gain] = predict(work, k, hw, W);
-      r[k] = Y[k] - pred;
+      const [pred, gain] = predict(W, k, hw, P);
+      r[k] = W[k] - pred;
       z[k] = r[k] / (sigma * gain);
     }
-    const found = [];
     for (let k = 0; k < n; k++) {
       if (!(z[k] > threshold)) continue;
       let j = k;
@@ -73,23 +282,383 @@ export function despike(x, y, { threshold = 6, maxWidth = 3 } = {}) {
         let e = -Infinity;
         for (let q = k; q <= j; q++) if (r[q] > e) e = r[q];
         const left = k > 0 ? r[k - 1] : -Infinity, right = j < n - 1 ? r[j + 1] : -Infinity;
-        if (left < NEIGHBOUR_FRACTION * e && right < NEIGHBOUR_FRACTION * e) found.push([k, j, e]);
+        if (left < NEIGHBOUR_FRACTION * e && right < NEIGHBOUR_FRACTION * e) found.set(k + ':' + j, [k, j]);
       }
       k = j;
     }
-    const same = found.length === runs.length && found.every((f, i) => f[0] === runs[i][0] && f[1] === runs[i][1]);
-    runs = found;
-    if (same || !runs.length) break;
-    work = Float64Array.from(Y);
-    for (const [a, b] of runs) fill(work, a, b);
   }
+  return [...found.values()];
+}
 
-  for (const [a, b, e] of runs) {
-    fill(out, a, b);
-    for (let k = a; k <= b; k++) result.removed.push({ index: k, x: x ? +x[k] : k, y: Y[k], replacedY: out[k] });
-    result.spikes.push({ start: a, end: b, xStart: x ? +x[a] : a, xEnd: x ? +x[b] : b, height: e });
+/**
+ * Can a smooth background plus one or two real bands explain y[a..b]?
+ * @returns {{event:boolean, height:number, misfit:number}} event: the feature stands above its
+ *   background by threshold σ; misfit: Wilson–Hilferty deviate of the best model's χ²
+ */
+function classify(Y, a, b, ctx) {
+  const { n, threshold, minBandPts, pad } = ctx;
+  const lo = Math.max(0, a - pad), hi = Math.min(n - 1, b + pad);
+  const m = hi - lo + 1;
+  const h = height(Y, a, b, ctx);
+  const sigma = localSigma(Y, a, b, ctx);
+  const none = { event: false, spike: false, height: h, misfit: 0, rel: 0 };
+  if (!(h > threshold * sigma) || m - (b - a + 1) < 3) return none;
+  const t = new Float64Array(m), yy = new Float64Array(m);
+  const mid = (lo + hi) / 2, half = Math.max(1, (hi - lo) / 2);
+  for (let i = 0; i < m; i++) { t[i] = (lo + i - mid) / half; yy[i] = Y[lo + i]; }
+  // Quadratic background (the flank or top of a broad band, a fluorescence
+  // slope) plus non-negative local bands no wider than half the window: a
+  // broader band is the background's job, and a broad band with curvature
+  // subtracted could otherwise fake a peak narrower than minBand.
+  const bg = [Float64Array.from(t, () => 1), t, Float64Array.from(t, v => v * v)];
+  const s2 = sigma * sigma;
+  // The band explaining a candidate may be a neighbour whose flank it sits on,
+  // so centres range over the whole window; the second band of a pair is the local one.
+  const cLo = lo, cHi = hi, nLo = Math.max(0, a - 1), nHi = Math.min(n - 1, b + 1);
+  const wMax = Math.max(minBandPts, m / 2);
+  const widths = [];
+  for (let w = minBandPts; w <= wMax * 1.0001; w *= 1.3) widths.push(w);
+  if (widths[widths.length - 1] < wMax * 0.97) widths.push(wMax);
+  // The grid search ranks models by their unweighted residual (cheap: see
+  // fastSSR); only the winner is refitted with the shape-tolerance weights.
+  const ssr = fastSSR(bg, yy);
+  const cache = new Map();
+  const prof = (c, w, eta) => {
+    const key = c + '|' + w + '|' + eta;
+    let p = cache.get(key);
+    if (!p) { p = ssr.column(Float64Array.from({ length: m }, (_, i) => pv(lo + i - c, w, eta))); cache.set(key, p); }
+    return p;
+  };
+  const judge = spec => {
+    const r = fitChi(bg, yy, s2, spec.map(q => prof(...q).p), true);
+    let rel = 0;
+    for (let i = Math.max(lo, a - 1); i <= Math.min(hi, b + 1); i++) rel = Math.max(rel, Math.abs(r.resid[i - lo]) / h);
+    return { misfit: wilsonHilferty(r.chi, m - 3 - 3 * spec.length), rel };
+  };
+
+  // one band: coarse grid, then refine centre and width around the best
+  let best1 = { s: Infinity, spec: null };
+  const try1 = (c, w, eta) => {
+    const s = ssr([prof(c, w, eta)]);
+    if (s < best1.s) best1 = { s, spec: [[c, w, eta]], c, w, eta };
+  };
+  for (const eta of [0, 0.5, 1]) for (const w of widths) for (let c = cLo; c <= cHi + 1e-9; c += 0.5) try1(c, w, eta);
+  if (!best1.spec) return none;
+  {
+    const { c: c0, w: w0, eta: e0 } = best1;
+    for (let c = c0 - 0.375; c <= c0 + 0.375 + 1e-9; c += 0.125) {
+      if (c < cLo || c > cHi) continue;
+      for (const f of [0.86, 0.93, 1, 1.07, 1.16]) { const w = w0 * f; if (w >= minBandPts * 0.9999 && w <= wMax * 1.0001) try1(c, w, e0); }
+    }
   }
-  return result;
+  let { misfit, rel } = judge(best1.spec);
+
+  // Two bands (doublets, a narrow band on the flank of another) can only rescue
+  // a feature the single band failed on, so they are tried only then.
+  if (misfit > Z_CRIT && rel > REL_MIN) {
+    const w2 = [...new Set([minBandPts, Math.min(wMax, 2 * minBandPts), wMax])];
+    let best2 = { s: Infinity, spec: null };
+    for (let c1 = nLo; c1 <= nHi + 1e-9; c1 += 0.5) {
+      for (let c2 = cLo; c2 <= cHi + 1e-9; c2 += 0.5) {
+        if (Math.abs(c2 - c1) < 0.5) continue;
+        for (const wa of w2) for (const wb of w2) {
+          const s = ssr([prof(c1, wa, 0.5), prof(c2, wb, 0.5)]);
+          if (s < best2.s) best2 = { s, spec: [[c1, wa, 0.5], [c2, wb, 0.5]] };
+        }
+      }
+    }
+    if (best2.spec) {
+      const j2 = judge(best2.spec);
+      if (j2.misfit < misfit) ({ misfit, rel } = j2);
+    }
+  }
+  return { event: true, spike: misfit > Z_CRIT && rel > REL_MIN, height: h, misfit, rel };
+}
+
+/**
+ * Residual sum of squares of y on [background | bands], band coefficients ≥ 0,
+ * for a fixed background. The background block of the normal equations is
+ * computed once per window and each band's products once per band, so a trial
+ * fit costs a 4×4 or 5×5 solve. `column(p)` wraps a band profile with its products.
+ */
+function fastSSR(bg, yy) {
+  const m = yy.length, nb = bg.length;
+  let ym = 0;
+  for (let i = 0; i < m; i++) ym += yy[i];
+  ym /= m;
+  const y = Float64Array.from(yy, v => v - ym);          // the constant column absorbs the mean
+  const dot = (u, v) => { let s = 0; for (let i = 0; i < m; i++) s += u[i] * v[i]; return s; };
+  const G = bg.map(p => bg.map(q => dot(p, q))), gy = bg.map(p => dot(p, y));
+  const yty = dot(y, y);
+  const K = nb + 2, A = new Float64Array(K * (K + 1)), sol = new Float64Array(K), rhs = new Float64Array(K);
+  const f = bands => {
+    let use = bands;
+    for (let tries = 0; tries <= bands.length; tries++) {
+      const k = nb + use.length;
+      for (let p = 0; p < nb; p++) { for (let q = 0; q < nb; q++) A[p * (k + 1) + q] = G[p][q]; rhs[p] = gy[p]; }
+      for (let j = 0; j < use.length; j++) {
+        const col = nb + j, u = use[j];
+        for (let p = 0; p < nb; p++) A[p * (k + 1) + col] = A[col * (k + 1) + p] = u.pb[p];
+        for (let jj = 0; jj <= j; jj++) A[col * (k + 1) + nb + jj] = A[(nb + jj) * (k + 1) + col] = jj === j ? u.pp : dot(u.p, use[jj].p);
+        rhs[col] = u.py;
+      }
+      for (let p = 0; p < k; p++) A[p * (k + 1) + k] = rhs[p];
+      if (!gaussJordan(A, k, sol)) return Infinity;
+      let neg = -1;
+      for (let j = 0; j < use.length; j++) if (sol[nb + j] < 0) { neg = j; break; }
+      if (neg < 0) {
+        let s = yty;                                       // at the least-squares solution SSR = yᵀy − cᵀBᵀy
+        for (let p = 0; p < k; p++) s -= sol[p] * rhs[p];
+        return Math.max(0, s);
+      }
+      use = use.filter((_, j) => j !== neg);
+    }
+    return Infinity;
+  };
+  f.column = p => ({ p, pb: bg.map(q => dot(p, q)), pp: dot(p, p), py: dot(p, y) });
+  return f;
+}
+
+/** Solve the k×k system stored row-major with its right-hand side in column k (k+1 wide), scaled to unit diagonal. */
+function gaussJordan(A, k, out) {
+  const W = k + 1;
+  const sc = new Float64Array(k);
+  for (let p = 0; p < k; p++) { const d = A[p * W + p]; if (!(d > 0)) return false; sc[p] = 1 / Math.sqrt(d); }
+  for (let p = 0; p < k; p++) { for (let q = 0; q < k; q++) A[p * W + q] *= sc[p] * sc[q]; A[p * W + k] *= sc[p]; }
+  for (let c = 0; c < k; c++) {
+    let piv = c;
+    for (let r = c + 1; r < k; r++) if (Math.abs(A[r * W + c]) > Math.abs(A[piv * W + c])) piv = r;
+    if (!(Math.abs(A[piv * W + c]) > 1e-10)) return false;
+    if (piv !== c) for (let q = 0; q < W; q++) { const t = A[c * W + q]; A[c * W + q] = A[piv * W + q]; A[piv * W + q] = t; }
+    for (let r = 0; r < k; r++) {
+      if (r === c) continue;
+      const fct = A[r * W + c] / A[c * W + c];
+      if (fct) for (let q = c; q < W; q++) A[r * W + q] -= fct * A[c * W + q];
+    }
+  }
+  for (let i = 0; i < k; i++) out[i] = A[i * W + k] / A[i * W + i] * sc[i];
+  return true;
+}
+
+/** Shrink a spike run to where it breaks away from the data around it. An end
+ *  point that continues the trend of the CONT points beyond it (a straight-line
+ *  extrapolation, within CONT_SIGMA of its noise) belongs to the signal, e.g. the
+ *  flank of a band the spike sits on; the spike starts at the first jump. So a
+ *  tall spike keeps its shoulders and a band under it is not taken along. */
+const CONT = 4, CONT_SIGMA = 4;
+const CONT_W = (() => {
+  // least-squares line through offsets 1…CONT, extrapolated to offset 0
+  const ts = Array.from({ length: CONT }, (_, i) => i + 1);
+  const S = ts.reduce((p, q) => p + q, 0), SS = ts.reduce((p, q) => p + q * q, 0);
+  const w = ts.map(t => (SS - S * t) / (CONT * SS - S * S));
+  return { w, gain: Math.sqrt(1 + w.reduce((p, q) => p + q * q, 0)) };
+})();
+function trim(Y, a, b, ctx) {
+  const { n } = ctx;
+  const tol = CONT_SIGMA * CONT_W.gain * localSigma(Y, a, b, ctx);
+  const pred = (i, dir) => {
+    let v = 0;
+    for (let k = 0; k < CONT; k++) { const j = i - dir * (k + 1); if (j < 0 || j >= n) return Infinity; v += CONT_W.w[k] * Y[j]; }
+    return v;
+  };
+  while (a < b && Y[a] - pred(a, 1) < tol) a++;
+  while (b > a && Y[b] - pred(b, -1) < tol) b--;
+  return [a, b];
+}
+
+/** Straight line through the window points outside a..b (robust enough for trimming). */
+function baseLine(Y, a, b, lo, hi) {
+  let sw = 0, st = 0, sy = 0, stt = 0, sty = 0;
+  for (let i = lo; i <= hi; i++) if (i < a || i > b) { sw++; st += i; sy += Y[i]; stt += i * i; sty += i * Y[i]; }
+  const den = sw * stt - st * st;
+  if (!sw) return () => 0;
+  if (Math.abs(den) < 1e-12) return () => sy / sw;
+  const s = (sw * sty - st * sy) / den, c = (sy - s * st) / sw;
+  return i => c + s * i;
+}
+
+/** Largest excess of y[a..b] over a quadratic through the window points outside the run. */
+function height(Y, a, b, { n, pad }) {
+  const e = excess(Y, a, b, n, pad);
+  return e.length ? Math.max(...e) : 0;
+}
+
+/** Excess of each point of y[a..b] over a quadratic through the window points outside the run. */
+function excess(Y, a, b, n, pad) {
+  const lo = Math.max(0, a - pad), hi = Math.min(n - 1, b + pad);
+  const tt = [], vv = [];
+  for (let i = lo; i <= hi; i++) if (i < a || i > b) { tt.push(i); vv.push(Y[i]); }
+  const out = new Float64Array(b - a + 1);
+  if (!tt.length) return out;
+  const deg = Math.min(2, tt.length - 1);
+  const mid = (lo + hi) / 2, half = Math.max(1, (hi - lo) / 2);
+  const cols = [];
+  for (let d = 0; d <= deg; d++) cols.push(tt.map(i => ((i - mid) / half) ** d));
+  const coef = solve(cols, vv, null) || [vv.reduce((p, q) => p + q, 0) / vv.length];
+  for (let i = a; i <= b; i++) {
+    let base = 0;
+    for (let d = 0; d < coef.length; d++) base += coef[d] * ((i - mid) / half) ** d;
+    out[i - a] = Y[i] - base;
+  }
+  return out;
+}
+
+/**
+ * χ² of a quadratic background plus non-negative bands, weights 1/(σ² + (SHAPE_TOL·band)²).
+ * Two passes: the band-dependent weights need a first estimate of the bands.
+ */
+function fitChi(bg, yy, s2, bands, wantResid = false) {
+  const m = yy.length;
+  let w = new Float64Array(m).fill(1 / s2);
+  // The tolerance scales with the band signal, but never beyond the data's own
+  // range: a runaway coefficient must not buy itself zero weight.
+  let ylo = Infinity, yhi = -Infinity;
+  for (const v of yy) { if (v < ylo) ylo = v; if (v > yhi) yhi = v; }
+  const cap = yhi - ylo;
+  let chi = Infinity;
+  for (let pass = 0; pass < 2; pass++) {
+    const use = bands.slice();
+    let coef = null;
+    const nb = bg.length;
+    for (let tries = 0; tries <= bands.length; tries++) {
+      coef = solve([...bg, ...use], yy, w);
+      if (!coef) return wantResid ? { chi: Infinity, resid: new Float64Array(m) } : Infinity;
+      const neg = coef.slice(nb).findIndex(c => c < 0);
+      if (neg < 0) break;
+      use.splice(neg, 1);
+    }
+    const bandSig = new Float64Array(m), resid = new Float64Array(m);
+    chi = 0;
+    for (let i = 0; i < m; i++) {
+      let mdl = 0, bs = 0;
+      for (let k = 0; k < nb; k++) mdl += coef[k] * bg[k][i];
+      for (let k = 0; k < use.length; k++) bs += coef[nb + k] * use[k][i];
+      mdl += bs; bandSig[i] = bs;
+      const r = yy[i] - mdl;
+      resid[i] = r;
+      chi += r * r * w[i];
+    }
+    if (pass === 0) w = Float64Array.from(bandSig, v => 1 / (s2 + (SHAPE_TOL * Math.min(Math.max(v, 0), cap)) ** 2));
+    else if (wantResid) return { chi, resid };
+  }
+  return chi;
+}
+
+/** Weighted least squares by the normal equations; null if singular. */
+function solve(cols, yy, w) {
+  const k = cols.length, m = yy.length;
+  const A = Array.from({ length: k }, () => new Float64Array(k + 1));
+  for (let i = 0; i < m; i++) {
+    const wi = w ? w[i] : 1;
+    for (let p = 0; p < k; p++) {
+      const cp = cols[p][i] * wi;
+      for (let q = p; q < k; q++) A[p][q] += cp * cols[q][i];
+      A[p][k] += cp * yy[i];
+    }
+  }
+  for (let p = 0; p < k; p++) for (let q = 0; q < p; q++) A[p][q] = A[q][p];
+  // Scale to unit diagonal so the singularity test is relative: a column almost
+  // collinear with the others makes the fit meaningless, not perfect.
+  const sc = Array.from({ length: k }, (_, p) => (A[p][p] > 0 ? 1 / Math.sqrt(A[p][p]) : 0));
+  if (sc.some(v => !v)) return null;
+  for (let p = 0; p < k; p++) { for (let q = 0; q < k; q++) A[p][q] *= sc[p] * sc[q]; A[p][k] *= sc[p]; }
+  for (let c = 0; c < k; c++) {
+    let piv = c;
+    for (let r = c + 1; r < k; r++) if (Math.abs(A[r][c]) > Math.abs(A[piv][c])) piv = r;
+    if (!(Math.abs(A[piv][c]) > 1e-10)) return null;
+    [A[c], A[piv]] = [A[piv], A[c]];
+    for (let r = 0; r < k; r++) {
+      if (r === c) continue;
+      const f = A[r][c] / A[c][c];
+      if (f) for (let q = c; q <= k; q++) A[r][q] -= f * A[c][q];
+    }
+  }
+  return Array.from({ length: k }, (_, i) => A[i][k] / A[i][i] * sc[i]);
+}
+
+/** Pseudo-Voigt (unit height) at distance d points from the centre, FWHM w points. */
+function pv(d, w, eta) {
+  const u2 = (2 * d / w) ** 2;
+  return eta / (1 + u2) + (1 - eta) * Math.exp(-LN2 * u2);
+}
+
+/** χ² with k degrees of freedom as a standard-normal deviate (Wilson–Hilferty). */
+function wilsonHilferty(chi, k) {
+  k = Math.max(1, k);
+  if (!Number.isFinite(chi)) return Infinity;
+  const v = 2 / (9 * k);
+  return (Math.cbrt(chi / k) - (1 - v)) / Math.sqrt(v);
+}
+
+/** Share of companion spectra that show the SAME feature: standing out above
+ *  their own background at the feature's peak point and, for features wider than
+ *  one point, with a similar profile (a band elsewhere in the span does not count). */
+const sigmaCache = new WeakMap();
+function presence(Y, comps, a, b, pad) {
+  const e = excess(Y, a, b, Y.length, pad);
+  let p = 0;
+  for (let i = 1; i < e.length; i++) if (e[i] > e[p]) p = i;
+  let hits = 0;
+  for (const c of comps) {
+    let s = sigmaCache.get(c);
+    if (s === undefined) { s = noiseSigma(Float64Array.from(c)); sigmaCache.set(c, s); }
+    const ec = excess(c, a, b, c.length, pad);
+    if (!(ec[p] > PRESENT_SIGMA * Math.max(s, 1e-300))) continue;
+    if (b === a || corr(e, ec) > 0.7) hits++;
+  }
+  return comps.length ? hits / comps.length : 0;
+}
+
+function corr(u, v) {
+  const n = u.length;
+  let mu = 0, mv = 0;
+  for (let i = 0; i < n; i++) { mu += u[i]; mv += v[i]; }
+  mu /= n; mv /= n;
+  let suv = 0, suu = 0, svv = 0;
+  for (let i = 0; i < n; i++) { const du = u[i] - mu, dv = v[i] - mv; suv += du * dv; suu += du * du; svv += dv * dv; }
+  return suu > 0 && svv > 0 ? suv / Math.sqrt(suu * svv) : 0;
+}
+
+/**
+ * Signal-dependent noise: photon shot noise grows with the count level, so a
+ * point on a strong band is noisier than one on the floor. From blocks of 16
+ * points: variance of the second differences against the block level, fitted as
+ * σ² + α·(level − floor level). Band curvature inflates the variance of band
+ * blocks, which errs toward a larger α: fewer false spikes on strong bands.
+ */
+function noiseModel(Y, sigma) {
+  const n = Y.length, B = 16, blocks = [];
+  for (let s = 1; s + B < n; s += B) {
+    const d = new Float64Array(B), lv = new Float64Array(B);
+    for (let i = 0; i < B; i++) { const k = s + i; d[i] = Y[k] - 0.5 * (Y[k - 1] + Y[k + 1]); lv[i] = Y[k]; }
+    const md = median(d);
+    const mad = median(d.map(v => Math.abs(v - md)));
+    blocks.push({ v: (1.4826 * mad) ** 2 / 1.5, L: median(lv) });
+  }
+  if (blocks.length < 8) return { alpha: 0, L0: 0, s2: sigma * sigma };
+  blocks.sort((p, q) => p.L - q.L);
+  const low = blocks.slice(0, Math.max(3, blocks.length >> 2));
+  const L0 = median(low.map(b => b.L));
+  const s2 = sigma * sigma;
+  const r = blocks.filter(b => b.L - L0 > 10 * sigma).map(b => (b.v - s2) / (b.L - L0));
+  const alpha = r.length >= 3 ? Math.max(0, median(r)) : 0;
+  return { alpha, L0, s2 };
+}
+
+/** Noise σ for the window around a..b, at the window's own signal level. */
+function localSigma(Y, a, b, { n, pad, nm }) {
+  if (!nm.alpha) return Math.sqrt(nm.s2);
+  const lo = Math.max(0, a - pad), hi = Math.min(n - 1, b + pad), v = [];
+  for (let i = lo; i <= hi; i++) if (i < a || i > b) v.push(Y[i]);
+  const level = v.length ? median(v) : Y[a];
+  return Math.sqrt(nm.s2 + nm.alpha * Math.max(0, level - nm.L0));
+}
+
+function medianSpacing(X) {
+  if (X.length < 2) return 1;
+  const d = new Float64Array(X.length - 1);
+  for (let i = 1; i < X.length; i++) d[i - 1] = Math.abs(X[i] - X[i - 1]);
+  return median(d) || 1;
 }
 
 /** Whitaker–Hayes noise level: MAD of first differences, as a Gaussian σ of y. */

@@ -18,7 +18,7 @@ const EOL = '\r\n';
 /** Column order of {@link peakTableCSV}. */
 export const PEAK_TABLE_COLUMNS = Object.freeze([
   'label', 'kind', 'tier', 'position_cm-1', 'height', 'fwhm_cm-1', 'prominence',
-  'area', 'confidence', 'delta_cm-1', 'band_id', 'band_name',
+  'area', 'match_score', 'delta_cm-1', 'band_id', 'band_name',
 ]);
 
 /** Column order of {@link fitParamsCSV}. */
@@ -28,7 +28,7 @@ export const FIT_PARAMS_COLUMNS = Object.freeze([
 ]);
 
 /** Column order of {@link spectrumCSV}. */
-export const SPECTRUM_COLUMNS = Object.freeze(['x', 'raw', 'baseline', 'corrected', 'final']);
+export const SPECTRUM_COLUMNS = Object.freeze(['x', 'raw', 'baseline', 'corrected', 'final', 'despiked']);
 
 /**
  * Format a number for CSV: integers verbatim, everything else to 6 significant
@@ -93,9 +93,10 @@ function pick(o, ...keys) {
  * Peak table as CSV, one row per labelled peak.
  * Row fields (camelCase; the snake_case column names are accepted too):
  * `label, kind, tier, x` (or `position`/`x0`), `height` (or `h`/`y`), `fwhm` (or `w`),
- * `prominence, area, confidence, delta, bandId, bandName`. Missing values stay empty.
+ * `prominence, area, matchScore` (or `confidence`), `delta, bandId, bandName`. Missing values stay empty.
  * Columns: label, kind, tier, position_cm-1, height, fwhm_cm-1, prominence, area,
- * confidence, delta_cm-1, band_id, band_name.
+ * match_score, delta_cm-1, band_id, band_name. match_score is the matcher's position score
+ * (1 at the atlas centre, ≈0.14 at the window edge): a distance measure, not a probability.
  * @param {object[]} rows
  * @returns {string}
  */
@@ -109,7 +110,7 @@ export function peakTableCSV(rows) {
     pick(r, 'fwhm', 'w', 'fwhm_cm-1'),
     pick(r, 'prominence'),
     pick(r, 'area'),
-    pick(r, 'confidence'),
+    pick(r, 'matchScore', 'match_score', 'confidence'),
     pick(r, 'delta', 'delta_cm-1'),
     pick(r, 'bandId', 'band_id'),
     pick(r, 'bandName', 'band_name'),
@@ -174,9 +175,9 @@ export function fitParamsCSV(components, windows) {
  */
 export function spectrumCSV(processed) {
   if (!processed || !processed.x) throw new Error('Nothing to export: the spectrum has no x values.');
-  const { x, raw, baseline, corrected, y } = processed;
+  const { x, raw, baseline, corrected, y, despiked } = processed;
   const at = (arr, i) => (arr && i < arr.length ? arr[i] : null);
   const rows = new Array(x.length);
-  for (let i = 0; i < x.length; i++) rows[i] = [x[i], at(raw, i), at(baseline, i), at(corrected, i), at(y, i)];
+  for (let i = 0; i < x.length; i++) rows[i] = [x[i], at(raw, i), at(baseline, i), at(corrected, i), at(y, i), at(despiked, i)];
   return toCSV(SPECTRUM_COLUMNS, rows);
 }

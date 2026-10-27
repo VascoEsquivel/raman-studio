@@ -6,6 +6,9 @@ import { esc, fmt, fmtX, fmtSigned, richText, plainText } from './dom.js';
 import { peakType } from '../fit/profile.js';
 
 const STATUS_GLYPH = { match: '✓', partial: '◐', no: '✕', info: 'i', insufficient: '…' };
+/** The matcher's confidence is a position score, never shown as a percentage (it is not a probability). */
+const SCORE_TIP = 'Position-match score: 1 at the atlas band centre, about 0.14 at the window edge. A distance measure, not a probability.';
+const score = c => (c || 0).toFixed(2);
 
 function refChips(lib, keys) {
   if (!keys || !keys.length) return '';
@@ -41,7 +44,7 @@ export function renderPeaks(el, vm) {
     return `<div class="prow${it.id === vm.selectedId ? ' sel' : ''}" data-select="${esc(it.id)}">
       <span class="ptag ${tagClass(it)}">${esc(it.sym)}</span>
       <div class="pinfo"><div class="pname">${esc(it.name)}</div><div class="pnums">${nums.join(' · ')}</div></div>
-      <div class="pside">${conf != null ? `<span class="pane-meta">${conf}%</span><span class="conf"><i style="width:${conf}%"></i></span>` : `<span class="pane-meta">${esc(it.tierText)}</span>`}
+      <div class="pside">${conf != null ? `<span class="pane-meta" title="${SCORE_TIP}">score ${score(it.confidence)}</span><span class="conf" title="${SCORE_TIP}"><i style="width:${conf}%"></i></span>` : `<span class="pane-meta">${esc(it.tierText)}</span>`}
       ${it.tier !== 'fit' ? `<button class="x" data-delete="${esc(it.id)}" title="Remove this peak (Del)">×</button>` : ''}</div>
     </div>`;
   };
@@ -175,7 +178,7 @@ export function renderBand(el, vm) {
   const measure = `<div class="measure">
       <div><div class="k">measured</div><div class="v">${fmtX(it.x)} <small>cm⁻¹</small></div></div>
       <div><div class="k">${it.pband ? 'Δ atlas' : 'height'}</div><div class="v">${it.pband ? fmtSigned(it.delta) + ' <small>cm⁻¹</small>' : fmt(it.height, 3)}</div></div>
-      <div><div class="k">${it.tier === 'fit' ? 'source' : 'confidence'}</div><div class="v">${it.tier === 'fit' ? 'fit' : it.confidence != null && it.kind !== 'unassigned' ? Math.round(it.confidence * 100) + '%' : '—'}</div></div>
+      <div><div class="k"${it.tier === 'fit' ? '' : ` title="${SCORE_TIP}"`}>${it.tier === 'fit' ? 'source' : 'match score'}</div><div class="v">${it.tier === 'fit' ? 'fit' : it.confidence != null && it.kind !== 'unassigned' ? score(it.confidence) : '—'}</div></div>
     </div>`;
   if (it.kind === 'unassigned' || it.kind === 'region') {
     const region = it.region;
@@ -212,7 +215,7 @@ function altsHTML(it) {
   const alts = (it.alternatives || []).filter(a => a.bandId !== it.bandId);
   if (!alts.length || it.tier === 'fit') return '';
   return `<div class="bfield"><div class="k">Other candidates</div><div class="alts">${alts.map(a =>
-    `<button data-reassign="${esc(it.id)}" data-band="${esc(a.bandId)}" title="Assign this peak to ${esc(a.label)}">${esc(a.label)}</button> ${Math.round(a.confidence * 100)}% (Δ ${fmtSigned(a.delta)})`).join(' · ')}
+    `<button data-reassign="${esc(it.id)}" data-band="${esc(a.bandId)}" title="Assign this peak to ${esc(a.label)}">${esc(a.label)}</button> score ${score(a.confidence)} (Δ ${fmtSigned(a.delta)})`).join(' · ')}
     ${it.override ? ` · <button data-reassign="${esc(it.id)}" data-band="">auto</button>` : ''}</div></div>`;
 }
 
@@ -227,5 +230,64 @@ export function captionHTML(it, vm) {
   }
   return `<div class="bandsym ${cls}">${esc(it.band.label)}</div>
     <div><div class="cap-name">${esc(plainText(it.band.name))}</div><div class="cap-line">${esc(plainText(it.band.origin))} · ${esc(plainText(it.band.use))}</div></div>
-    <div class="cap-num"><b>${fmtX(it.x)}</b><br>cm⁻¹ · ${it.tier === 'fit' ? 'fit' : Math.round((it.confidence || 0) * 100) + '%'}</div>`;
+    <div class="cap-num"><b>${fmtX(it.x)}</b><br>cm⁻¹ · ${it.tier === 'fit' ? 'fit' : 'score ' + score(it.confidence)}</div>`;
+}
+
+// ------------------------------------------------------------------ data
+const hfmt = v => (Math.abs(v) >= 100 ? String(Math.round(v)) : fmt(v, 3));
+const SPIKE_KIND = { cosmic: 'cosmic ray', artifact: 'detector artifact', manual: 'zapped', suspect: 'check', kept: 'kept', recurring: 'recurs' };
+
+export function renderData(el, vm) {
+  const d = vm.data;
+  if (!d) { el.innerHTML = '<div class="empty">Load a spectrum to see its acquisition settings and quality checks.</div>'; return; }
+  const range = e => (Math.round(e.xStart) === Math.round(e.xEnd) ? fmtX(e.xStart) : `${fmtX(e.xStart)}–${fmtX(e.xEnd)}`);
+  const pts = e => `${e.end - e.start + 1} pt${e.end === e.start ? '' : 's'}`;
+  const btn = (act, e, label, title) => `<button class="btn ghost" data-spike="${act}" data-lo="${e.xStart}" data-hi="${e.xEnd}" title="${esc(title)}">${label}</button>`;
+
+  const acq = d.acq.fields.length
+    ? `<div class="kv">${d.acq.fields.map(f => `<span>${esc(f.label)}</span><b>${esc(f.value)}</b>`).join('')}</div>`
+    : `<p class="empty" style="padding:4px 0">${d.acq.hasHeader ? 'The file header holds no acquisition settings the app recognises.' : 'This file carries no acquisition metadata (plain exports usually do not).'}</p>`;
+  const flags = d.flags.length
+    ? d.flags.map(f => `<div class="${f.level === 'warn' ? 'warnline' : 'infoline'}">${f.level === 'warn' ? '⚠' : 'i'} ${esc(f.text)}</div>`).join('')
+    : '<div class="okline">✓ No saturation, clipping or flat segments found.</div>';
+
+  let spikes;
+  if (!d.despikeOn) {
+    spikes = '<p class="empty" style="padding:4px 0">Despike is off. Switch it on in the chain below the plot to remove or zap spikes.</p>';
+  } else {
+    const info = d.info || {};
+    const set = info.companions
+      ? `Compared with the ${info.companions} other spectra of this file: a feature they share is kept, or labelled a detector artifact when it is one point wide.`
+      : d.setSize >= 4 ? `This file has ${d.setSize} other spectra on the same axis; comparing with them is off.` : 'Single spectrum: judged on its own shape.';
+    const crit = `A feature is removed only if no real band at least <b class="mono">${fmt(info.minBandCm, 3)} cm⁻¹</b> wide${info.minBandAuto ? ' (auto: 3 points)' : ''}, nor two overlapping ones, can reproduce it within the noise. ${set}`;
+    const zapOf = e => (d.edits.zaps || []).find(z => z[0] <= e.xStart + 1e-9 && z[1] >= e.xEnd - 1e-9);
+    const evRow = e => {
+      const z = e.kind === 'manual' ? zapOf(e) : null;
+      const action = e.kind === 'manual'
+        ? (z ? `<button class="btn ghost" data-spike="unzap" data-lo="${z[0]}" data-hi="${z[1]}" title="Undo this zap">Undo</button>` : '')
+        : btn('keep', e, 'Keep', 'Put these points back: it is real signal');
+      return `<div class="srow"><span class="stag ${esc(e.kind)}">${SPIKE_KIND[e.kind] || esc(e.kind)}</span>
+        <span class="snum"><b>${range(e)}</b> cm⁻¹ · ${pts(e)} · h ${hfmt(e.height)}${e.share != null && e.kind === 'artifact' ? ` · in ${Math.round(e.share * 100)} % of the others` : ''}</span>${action}</div>`;
+    };
+    const restRow = e => `<div class="srow"><span class="stag ${esc(e.kind)}">${SPIKE_KIND[e.kind] || esc(e.kind)}</span>
+      <span class="snum"><b>${range(e)}</b> cm⁻¹ · ${pts(e)}${e.kind === 'recurring' && e.share != null ? ` · also in ${Math.round(e.share * 100)} % of the other spectra, so treated as real` : ' · kept by you'}</span>
+      ${e.kind === 'kept' ? btn('unkeep', e, 'Remove', 'Remove these points again') : ''}</div>`;
+    const susRow = e => `<div class="srow"><span class="stag ${esc(e.kind)}">${SPIKE_KIND[e.kind] || esc(e.kind)}</span>
+      <span class="snum"><b>${range(e)}</b> cm⁻¹ · ${pts(e)} · h ${hfmt(e.height)}${e.kind === 'artifact' ? ` · same point in ${Math.round((e.share || 0) * 100)} % of the spectra` : e.share === 0 ? ' · in no other spectrum' : ''}</span>
+      ${btn('zap', e, 'Remove', 'Interpolate across these points')}</div>`;
+    spikes = `<p class="dnote">${crit}</p>
+      ${d.spikes.length ? `<div class="slist">${d.spikes.map(evRow).join('')}</div>` : '<div class="okline">No spikes found.</div>'}
+      ${d.restored.length ? `<div class="ssub">Left in place</div><div class="slist">${d.restored.map(restRow).join('')}</div>` : ''}
+      ${d.suspects.length ? `<div class="ssub">Worth a look</div><p class="dnote">Kept, but close to the spike criteria${info.companions ? ', unique to this spectrum, or a one-point artifact' : ''}. Zoom in and judge; <b>Remove</b> interpolates across it.</p><div class="slist">${d.suspects.map(susRow).join('')}</div>` : ''}
+      <form class="zapform" data-zapform><label>Zap by hand</label>
+        <input name="lo" type="number" step="any" inputmode="decimal" placeholder="from" aria-label="Zap from (cm⁻¹)">
+        <input name="hi" type="number" step="any" inputmode="decimal" placeholder="to" aria-label="Zap to (cm⁻¹)">
+        <span class="u">cm⁻¹</span><button class="btn" type="submit">Zap</button></form>
+      <p class="dnote">Zapping interpolates the range linearly from its edges. Every removal is listed here, marked on the plot and written into the report. <kbd>Ctrl</kbd> <kbd>Z</kbd> undoes.</p>`;
+  }
+  const src = [d.source.format, d.source.file].filter(Boolean).map(esc).join(' · ');
+  el.innerHTML = `<div class="pane-head"><h2 class="pane-title">Data</h2><span class="pane-meta">${src || esc(d.name)}</span></div>
+    <div class="fitwin"><h4><span>Acquisition</span><span>${d.points} pts · ${fmt(d.x0, 4)}–${fmt(d.x1, 4)} cm⁻¹</span></h4>${acq}</div>
+    <div class="fitwin"><h4><span>Quality checks</span><span>${d.flags.filter(f => f.level === 'warn').length || '✓'}</span></h4>${flags}</div>
+    <div class="fitwin"><h4><span>Cosmic-ray removal</span><span>${d.despikeOn ? `${d.spikes.length} removed` : 'off'}</span></h4>${spikes}</div>`;
 }

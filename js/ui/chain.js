@@ -71,7 +71,7 @@ export class Chain {
     const st = m.stats || {};
     set('raw', st.points ? `${st.points} pts` : '—');
     led('despike', s.despike.on);
-    set('despike', s.despike.on ? `<span class="stat">${st.spikes ?? 0}</span> removed` : 'off');
+    set('despike', s.despike.on ? `<span class="stat">${st.spikes ?? 0}</span> removed${st.suspects ? ` · ${st.suspects} to check` : ''}` : 'off');
     led('baseline', s.baseline.on);
     const bm = s.baseline.method;
     set('baseline', s.baseline.on ? (bm === 'als' ? `ALS λ 1e${Math.round(Math.log10(s.baseline.lambda) * 10) / 10}` : BASELINE_LABEL[bm] || bm) : 'off');
@@ -127,10 +127,15 @@ export class Chain {
       case 'raw': return `<h3>Raw spectrum</h3>
         <div class="kv"><span>points</span><b>${m.stats.points ?? '—'}</b><span>range</span><b>${fmt(m.stats.x0, 5)} – ${fmt(m.stats.x1, 5)} cm⁻¹</b><span>source</span><b>${esc(m.stats.source || '—')}</b></div>
         <p class="hint">Use the view switch on the plot (Processed · Raw + baseline · Compare) to see what each step removed. Keys <kbd>B</kbd> and <kbd>C</kbd>.</p>`;
-      case 'despike': return `<h3>Cosmic-ray removal</h3>
+      case 'despike': {
+        const info = m.despikeInfo || {}, mb = s.despike.minBandCm || 0;
+        return `<h3>Cosmic-ray removal</h3>
         ${range('despike.threshold', 'Threshold', 3, 15, 0.5, s.despike.threshold, s.despike.threshold)}
-        ${range('despike.maxWidth', 'Max width', 1, 3, 1, s.despike.maxWidth, s.despike.maxWidth + ' pt')}
-        <p class="hint">Flags 1–3 point spikes by a modified z-score of the point-to-point differences, then requires a sharp rise and fall: real bands are wider and are never touched. Removed points are interpolated and marked on the plot.</p>`;
+        ${range('despike.maxWidth', 'Max width', 1, 25, 1, s.despike.maxWidth, s.despike.maxWidth + ' pt')}
+        ${range('despike.minBandCm', 'Narrowest band', 0, 30, 0.5, mb, mb ? mb + ' cm⁻¹' : 'auto' + (info.minBandCm ? ' · ' + fmt(info.minBandCm, 3) + ' cm⁻¹' : ''))}
+        ${m.setSize >= 4 ? `<div class="field"><label class="chk"><input type="checkbox" data-path="despike.useSet"${s.despike.useSet ? ' checked' : ''}> compare with the ${m.setSize} other spectra of this file</label></div>` : ''}
+        <p class="hint">A feature is removed only if no real band at least <b>Narrowest band</b> wide, nor two overlapping ones, can reproduce its shape within the noise. That catches cosmic-ray tracks of any width up to <b>Max width</b> and keeps narrow real bands. Auto is 3 data points; lower it if your sample has sharper real lines (a Si peak on a coarse grid, for example). <b>Threshold</b> sets how far above its surroundings (in noise σ) a feature must stand to be examined. The <b>Data</b> tab lists every removal, with Keep and Zap.</p>`;
+      }
       case 'baseline': {
         const lam = Math.log10(s.baseline.lambda), p = Math.log10(s.baseline.p);
         const opts = ['none', 'constant', 'linear', 'quadratic', 'als'].map(k => `<option value="${k}"${k === s.baseline.method ? ' selected' : ''}>${k === 'als' ? 'Asymmetric least squares' : BASELINE_LABEL[k]}</option>`).join('');
@@ -177,6 +182,7 @@ export class Chain {
         case 'baseline.lambdaLog': return '1e' + (+v).toFixed(1);
         case 'baseline.pLog': return Math.pow(10, +v).toPrecision(2);
         case 'despike.maxWidth': case 'smooth.window': return v + ' pt';
+        case 'despike.minBandCm': return +v ? v + ' cm⁻¹' : 'auto';
         case 'detect.sensitivity': return (v * 100).toFixed(0) + '%';
         case 'detect.minWidthCm': case 'detect.minDistanceCm': return v + ' cm⁻¹';
         case 'match.toleranceCm': return '±' + v + ' cm⁻¹';
@@ -187,7 +193,7 @@ export class Chain {
       if (inp.type === 'range') paintRange(inp);
       const send = commit => {
         const path = inp.dataset.path;
-        let v = inp.type === 'range' ? +inp.value : inp.value;
+        let v = inp.type === 'range' ? +inp.value : inp.type === 'checkbox' ? inp.checked : inp.value;
         if (inp.type === 'range') {
           paintRange(inp);
           const o = pop.querySelector(`[data-out="${path}"]`); if (o) o.textContent = fmtOut(path, v);

@@ -12,6 +12,7 @@ import { deconvolve } from './fit/deconvolve.js';
 import { peakY } from './fit/profile.js';
 import { computeRatios } from './analysis/ratios.js';
 import { evaluateWorkflow } from './analysis/workflow.js';
+import { acquisition, qualityFlags } from './analysis/acquisition.js';
 import { synthFromLibrary, synthMonolayer } from './sample/synth.js';
 import { peakTableCSV, fitParamsCSV, spectrumCSV } from './export/csv.js';
 import { buildFigureSVG, svgToPng } from './export/image.js';
@@ -38,6 +39,7 @@ const S = {
   toleranceCm: null,
   processed: null, procCache: new Map(),
   autoPeaks: [], manual: [], hidden: [], overrides: {},
+  spikeEdits: { keep: [], zaps: [] },   // per active spectrum: despike keeps (cm⁻¹) and hand zaps ([lo, hi])
   peaks: [], assignments: [], items: [],
   deconv: null, ratios: [], workflow: null, noiseSigma: 0,
   display: 'processed', showComponents: true, labelAllFit: false,
@@ -52,6 +54,7 @@ let pendingSnap = null;
 const snapshot = () => JSON.stringify({
   settings: S.settings, detect: S.detect, toleranceCm: S.toleranceCm, laserNm: S.laserNm,
   libraryId: S.library && S.library.id, manual: S.manual, hidden: S.hidden, overrides: S.overrides,
+  spikeEdits: S.spikeEdits,
 });
 function pushHistory(snap = snapshot()) {
   if (undoStack[undoStack.length - 1] === snap) return;
@@ -60,7 +63,8 @@ function pushHistory(snap = snapshot()) {
 }
 function restore(snap) {
   const o = JSON.parse(snap);
-  Object.assign(S, { settings: o.settings, detect: o.detect, toleranceCm: o.toleranceCm, manual: o.manual, hidden: o.hidden, overrides: o.overrides });
+  Object.assign(S, { settings: o.settings, detect: o.detect, toleranceCm: o.toleranceCm, manual: o.manual, hidden: o.hidden, overrides: o.overrides,
+    spikeEdits: o.spikeEdits || { keep: [], zaps: [] } });
   if (o.libraryId && o.libraryId !== S.library?.id) S.library = S.libraries.find(l => l.id === o.libraryId) || S.library;
   setLaser(o.laserNm, { silent: true });
   recompute('process');
@@ -89,6 +93,18 @@ function gWindow() {
   return g ? g.window : null;
 }
 
+/** The other spectra of the same file (and sheet) on exactly the same x: a map
+ *  or series, which despike may use as a second opinion. */
+function companionsFor(sp) {
+  if (!sp || !sp.source || !sp.source.file) return [];
+  const n = sp.x.length, tolX = 1e-9 * Math.abs((sp.x[n - 1] - sp.x[0]) || 1);
+  const sameX = o => o.x.length === n && o.x.every((v, i) => Math.abs(v - sp.x[i]) <= tolX);
+  return S.spectra.filter(o => o !== sp && o.source && o.source.file === sp.source.file && o.source.sheet === sp.source.sheet && sameX(o)).map(o => o.y);
+}
+function pipelineFor(sp, edits = null) {
+  return runPipeline(sp, S.settings, { bandWindow: gWindow(), companions: companionsFor(sp), spikeEdits: edits });
+}
+
 // ------------------------------------------------------------------ compute chain
 /**
  * Recompute from a given stage downward.
@@ -101,7 +117,7 @@ function recompute(level = 'process', { reveal = false } = {}) {
   try {
     if (level === 'process' || level === 'match') prepare();
     if (sp && level === 'process') {
-      S.processed = runPipeline(sp, S.settings, { bandWindow: gWindow() });
+      S.processed = pipelineFor(sp, S.spikeEdits);
       S.procCache.clear();
       S.noiseSigma = estimateNoise(S.processed.y);
       S.deconv = null;
@@ -212,7 +228,7 @@ function labeledItems() {
 function processedFor(sp) {
   if (sp.id === S.activeId) return S.processed;
   if (!S.procCache.has(sp.id)) {
-    try { S.procCache.set(sp.id, runPipeline(sp, S.settings, { bandWindow: gWindow() })); } catch { S.procCache.set(sp.id, null); }
+    try { S.procCache.set(sp.id, pipelineFor(sp)); } catch { S.procCache.set(sp.id, null); }
   }
   return S.procCache.get(sp.id);
 }
@@ -343,6 +359,21 @@ function viewModel() {
     deconv: S.deconv, toleranceCm: tol(), refText: refText(),
     showComponents: S.showComponents, labelAllFit: S.labelAllFit,
     fitBounds: lib ? `bounded to ${lib.fitDefaults?.fwhmMin ?? '—'}–${lib.fitDefaults?.fwhmMax ?? '—'} cm⁻¹` : '',
+    data: dataModel(),
+  };
+}
+
+/** What the Data pane shows: acquisition settings, quality flags, spike removal. */
+function dataModel() {
+  const sp = active(), P = S.processed;
+  if (!sp || !P) return null;
+  const acq = acquisition(sp.meta);
+  return {
+    name: sp.name, source: sp.source || {}, points: P.x.length, x0: P.x[0], x1: P.x[P.x.length - 1],
+    acq, flags: qualityFlags({ x: sp.x, y: sp.y }, acq),
+    despikeOn: !!(P.steps && P.steps.despike), despike: S.settings.despike, info: P.despikeInfo,
+    spikes: P.spikes || [], suspects: P.suspects || [], restored: P.restored || [], edits: S.spikeEdits,
+    setSize: companionsFor(sp).length,
   };
 }
 
@@ -376,7 +407,8 @@ function renderAll() {
     settings: S.settings, detect: S.detect, toleranceCm: tol(),
     libraries: S.libraries, libraryId: lib?.id, libraryShort: lib ? (lib.id === 'graphene-go' ? 'graphene/GO atlas' : lib.name) : '—',
     refText: refText(),
-    stats: P ? { points: P.x.length, x0: P.x[0], x1: P.x[P.x.length - 1], source: sp?.source?.format, spikes: groupSpikes(P).length, peaks: S.peaks.length } : {},
+    stats: P ? { points: P.x.length, x0: P.x[0], x1: P.x[P.x.length - 1], source: sp?.source?.format, spikes: (P.spikes || []).length, suspects: (P.suspects || []).length, peaks: S.peaks.length } : {},
+    despikeInfo: P ? P.despikeInfo : null, setSize: sp ? companionsFor(sp).length : 0,
     canDeconvolve: has && !!S.prepared,
     deconvText: S.deconv ? `${S.deconv.components.filter(c => c.significant).length} bands · q ${S.deconv.windows.map(w => isFinite(w.stats?.quality) ? w.stats.quality.toFixed(2) : '—').join(' / ')}` : 'nine-band fit · F',
   });
@@ -392,10 +424,14 @@ function renderDeck() {
   for (const t of $$('.deck-tabs [data-tab]')) {
     t.setAttribute('aria-selected', String(t.dataset.tab === S.tab));
     if (t.dataset.tab === 'peaks') t.innerHTML = `Peaks${S.peaks.length ? `<span class="badge">${S.peaks.length}</span>` : ''}`;
+    if (t.dataset.tab === 'data') {
+      const d = vm.data, warn = d ? d.flags.filter(f => f.level === 'warn').length + d.suspects.length : 0;
+      t.innerHTML = `Data${warn ? `<span class="badge warn" title="quality warnings and features to check">${warn}</span>` : ''}`;
+    }
   }
   for (const p of $$('.pane')) p.hidden = p.dataset.pane !== S.tab;
-  const target = { peaks: '#panePeaks', ratios: '#paneRatios', read: '#paneRead', fit: '#paneFit', band: '#paneBand' }[S.tab];
-  const fn = { peaks: panes.renderPeaks, ratios: panes.renderRatios, read: panes.renderRead, fit: panes.renderFit, band: panes.renderBand }[S.tab];
+  const target = { peaks: '#panePeaks', ratios: '#paneRatios', read: '#paneRead', fit: '#paneFit', band: '#paneBand', data: '#paneData' }[S.tab];
+  const fn = { peaks: panes.renderPeaks, ratios: panes.renderRatios, read: panes.renderRead, fit: panes.renderFit, band: panes.renderBand, data: panes.renderData }[S.tab];
   try { fn($(target), vm); } catch (err) { $(target).innerHTML = `<div class="empty">Could not render this panel: ${esc(err.message)}</div>`; }
 }
 
@@ -470,6 +506,27 @@ function nudgeSelected(dx) {
   return true;
 }
 
+// ------------------------------------------------------------------ spike edits
+/** keep / unkeep an automatic removal, zap a range by hand, or undo a zap. */
+function spikeAction(act, d) {
+  const P = S.processed;
+  if (!P) return;
+  const ed = S.spikeEdits;
+  const lo = Math.min(+d.lo, +d.hi), hi = Math.max(+d.lo, +d.hi);
+  if (!isFinite(lo) || !isFinite(hi)) return;
+  if (act === 'zap' && !P.x.some(v => v >= lo && v <= hi)) return toast('No data points in that range', { warn: true });
+  pushHistory();
+  if (act === 'keep') ed.keep.push((lo + hi) / 2);
+  else if (act === 'unkeep') ed.keep = ed.keep.filter(k => !(k >= lo - 1e-9 && k <= hi + 1e-9));
+  else if (act === 'zap') ed.zaps.push([lo, hi]);
+  else if (act === 'unzap') ed.zaps = ed.zaps.filter(z => !(Math.abs(z[0] - lo) < 1e-9 && Math.abs(z[1] - hi) < 1e-9));
+  else return;
+  S.deconv = null;
+  recompute('process');
+  const what = { keep: 'Kept', unkeep: 'Removed again', zap: 'Zapped', unzap: 'Zap undone' }[act];
+  toast(`${what} ${fmtX(lo)}–${fmtX(hi)} cm⁻¹ · Ctrl Z to undo`);
+}
+
 // ------------------------------------------------------------------ deconvolution
 async function runDeconvolution() {
   if (!S.processed || !S.prepared) return;
@@ -539,7 +596,7 @@ function addSpectra(list) {
 
 function setActive(id, { reveal = true, resetView = true } = {}) {
   S.activeId = id;
-  S.manual = []; S.hidden = []; S.overrides = {}; S.selectedId = null; S.deconv = null;
+  S.manual = []; S.hidden = []; S.overrides = {}; S.spikeEdits = { keep: [], zaps: [] }; S.selectedId = null; S.deconv = null;
   undoStack.length = 0; redoStack.length = 0;
   const sp = active();
   if (sp && sp.meta && isFinite(sp.meta.laserNm)) {
@@ -641,19 +698,42 @@ async function doExport(kind) {
 function csvRows() {
   return S.items.map(it => ({
     label: it.sym, kind: it.kind, tier: it.tier, x: it.x, height: it.height, fwhm: it.fwhm, prominence: it.prominence,
-    area: it.area, confidence: it.tier === 'fit' ? null : it.confidence, delta: it.delta, bandId: it.bandId,
+    area: it.area, matchScore: it.tier === 'fit' ? null : it.confidence, delta: it.delta, bandId: it.bandId,
     bandName: it.band ? plainText(it.band.name) : it.kind === 'region' ? it.region?.name : '',
   }));
 }
 function settingsText() {
   const s = S.settings;
   return [
-    s.despike.on ? `despike z>${s.despike.threshold}` : 'no despike',
+    s.despike.on ? despikeText() : 'no despike',
     s.baseline.on ? (s.baseline.method === 'als' ? `ALS baseline λ=${fmt(s.baseline.lambda, 2)} p=${s.baseline.p}` : `${s.baseline.method} baseline`) : 'no baseline',
     s.smooth.on ? `SG ${s.smooth.window}/${s.smooth.order}` : 'no smoothing',
     s.normalize.on ? `normalized (${s.normalize.mode})` : 'not normalized',
     `detection sensitivity ${Math.round(S.detect.sensitivity * 100)}%`, `match tolerance ±${tol()} cm⁻¹`,
   ].join(', ');
+}
+function despikeText() {
+  const s = S.settings.despike, P = S.processed, info = P && P.despikeInfo;
+  const parts = [`despike (removed only where no band ≥ ${info ? fmt(info.minBandCm, 3) : '—'} cm⁻¹ wide${s.minBandCm ? '' : ' [auto]'} fits; candidates z>${s.threshold}, ≤ ${s.maxWidth} pts${info && info.companions ? `; compared with ${info.companions} spectra of the file` : ''})`];
+  if (P && P.spikes) {
+    const by = k => P.spikes.filter(e => e.kind === k);
+    const list = a => a.map(e => Math.round(e.xStart) === Math.round(e.xEnd) ? `${Math.round(e.xStart)}` : `${Math.round(e.xStart)}–${Math.round(e.xEnd)}`).join(', ');
+    const c = by('cosmic'), a = by('artifact'), m = by('manual');
+    parts.push(`${c.length} cosmic ray${c.length === 1 ? '' : 's'} removed${c.length ? ` at ${list(c)} cm⁻¹` : ''}`);
+    if (a.length) parts.push(`${a.length} detector artifact${a.length === 1 ? '' : 's'} masked at ${list(a)} cm⁻¹`);
+    if (m.length) parts.push(`zapped by hand: ${list(m)} cm⁻¹`);
+    const kept = (P.restored || []).filter(e => e.kind === 'kept');
+    if (kept.length) parts.push(`kept by hand: ${list(kept)} cm⁻¹`);
+  }
+  return parts.join('; ');
+}
+/** Acquisition settings and quality warnings, one line each, for the report. */
+function acqSummary() {
+  const d = dataModel();
+  if (!d) return {};
+  const acqText = d.acq.fields.map(f => `${f.label.toLowerCase()} ${f.value}`).join(', ');
+  const qualityText = d.flags.map(f => f.text).join(' ');
+  return { acqText, qualityText };
 }
 async function printReport() {
   const sp = active();
@@ -665,7 +745,7 @@ async function printReport() {
   fillReport($('#report'), {
     svg, spectrumName: sp.name, laserNm: S.laserNm, refText: refText(), library: S.library,
     items: S.items.slice().sort((a, b) => a.x - b.x), ratios: S.ratios, workflow: S.workflow, deconv: S.deconv,
-    settingsText: settingsText(), dateText: new Date().toLocaleString(),
+    settingsText: settingsText(), dateText: new Date().toLocaleString(), ...acqSummary(),
   });
   busy(false);
   await nextFrame();
@@ -678,7 +758,7 @@ function saveProject() {
     app: 'raman-studio', version: 1, savedAt: new Date().toISOString(),
     laserNm: S.laserNm, libraryId: S.library?.id, settings: S.settings, detect: S.detect, toleranceCm: S.toleranceCm,
     display: S.display, stack: S.stack, activeIndex: S.spectra.findIndex(s => s.id === S.activeId),
-    manual: S.manual, hidden: S.hidden, overrides: S.overrides, ranDeconvolution: !!S.deconv,
+    manual: S.manual, hidden: S.hidden, overrides: S.overrides, spikeEdits: S.spikeEdits, ranDeconvolution: !!S.deconv,
     spectra: S.spectra.map(s => ({ name: s.name, x: Array.from(s.x), y: Array.from(s.y), xLabel: s.xLabel, xUnit: s.xUnit, yLabel: s.yLabel, source: s.source, meta: s.meta })),
   };
   download(new Blob([JSON.stringify(o)], { type: 'application/json' }), safeName(sp.name) + '.raman-studio.json');
@@ -697,6 +777,7 @@ async function openProject(file) {
     setLaser(o.laserNm || 532, { silent: true });
     setActive(spectra[Math.max(0, o.activeIndex || 0)].id, { reveal: true });
     S.manual = o.manual || []; S.hidden = o.hidden || []; S.overrides = o.overrides || {};
+    S.spikeEdits = o.spikeEdits || { keep: [], zaps: [] };
     manualSeq = 1 + S.manual.reduce((m, q) => Math.max(m, +String(q.id).split(':')[1] || 0), 0);
     recompute('peaks');
     if (o.ranDeconvolution) await runDeconvolution();
@@ -822,6 +903,8 @@ function wire() {
   // deck
   for (const t of $$('.deck-tabs [data-tab]')) t.onclick = () => { S.tab = t.dataset.tab; renderDeck(); };
   $('#deck').addEventListener('click', e => {
+    const sk = e.target.closest('[data-spike]');
+    if (sk) { e.stopPropagation(); spikeAction(sk.dataset.spike, sk.dataset); return; }
     const del = e.target.closest('[data-delete]');
     if (del) { e.stopPropagation(); S.selectedId = del.dataset.delete; deleteSelected(); return; }
     const re = e.target.closest('[data-reassign]');
@@ -837,6 +920,13 @@ function wire() {
       const id = sel.dataset.select;
       select(S.selectedId === id && S.tab !== 'band' ? null : id, { openBand: false });
     }
+  });
+  $('#deck').addEventListener('submit', e => {
+    const f = e.target.closest('[data-zapform]'); if (!f) return;
+    e.preventDefault();
+    const lo = parseFloat(f.elements.lo.value), hi = parseFloat(f.elements.hi.value);
+    if (!isFinite(lo) || !isFinite(hi)) return toast('Enter both ends of the range in cm⁻¹', { warn: true });
+    spikeAction('zap', { lo, hi });
   });
   $('#deck').addEventListener('dblclick', e => { const sel = e.target.closest('[data-select]'); if (sel) select(sel.dataset.select, { openBand: true }); });
   $('#deck').addEventListener('change', e => {

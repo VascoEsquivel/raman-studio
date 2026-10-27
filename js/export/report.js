@@ -5,11 +5,12 @@ import { esc, fmt, fmtX, fmtSigned, richText } from '../ui/dom.js';
 
 /**
  * @param {HTMLElement} el   the #report element
- * @param {object} r  { svg, spectrumName, laserNm, refText, library, items, ratios, workflow, deconv, settingsText, dateText }
+ * @param {object} r  { svg, spectrumName, laserNm, refText, library, items, ratios, workflow, deconv, settingsText, dateText,
+ *   acqText?, qualityText? }
  */
 export function fillReport(el, r) {
   const lib = r.library;
-  // One row per band: detected position/confidence merged with the fitted
+  // One row per band: detected position/match score merged with the fitted
   // width/area, so a deconvolved spectrum still fits on one page.
   const groups = new Map();
   for (const it of r.items) {
@@ -26,7 +27,7 @@ export function fillReport(el, r) {
     <td class="n">${fmtX(it.x)}</td><td class="n">${it.delta != null ? fmtSigned(it.delta) : '—'}</td>
     <td class="n">${fmt(it.height, 3)}</td><td class="n">${fmt(fit ? fit.fwhm : it.fwhm, 3)}</td>
     <td class="n">${fit && fit.area != null ? fmt(fit.area, 3) : '—'}</td>
-    <td class="n">${det && det.kind !== 'unassigned' && det.kind !== 'region' ? Math.round((det.confidence || 0) * 100) + '%' : '—'}</td>
+    <td class="n">${det && det.kind !== 'unassigned' && det.kind !== 'region' ? (det.confidence || 0).toFixed(2) : '—'}</td>
     <td>${src}</td></tr>`;
   }).join('');
   const ratioRows = (r.ratios || []).map(x => `<tr><td>${esc(x.name)}</td>
@@ -53,7 +54,7 @@ export function fillReport(el, r) {
     <section class="rp-cols">
       <div>
         <h2>Peaks</h2>
-        <table class="rp-table"><thead><tr><th>Band</th><th>cm⁻¹</th><th>Δ</th><th>Height</th><th>FWHM</th><th>Area</th><th>Conf.</th><th>Source</th></tr></thead><tbody>${rows || '<tr><td colspan="8">No peaks</td></tr>'}</tbody></table>
+        <table class="rp-table"><thead><tr><th>Band</th><th>cm⁻¹</th><th>Δ</th><th>Height</th><th>FWHM</th><th>Area</th><th>Match</th><th>Source</th></tr></thead><tbody>${rows || '<tr><td colspan="8">No peaks</td></tr>'}</tbody></table>
       </div>
       <div>
         <h2>Intensity ratios</h2>
@@ -63,7 +64,8 @@ export function fillReport(el, r) {
       </div>
     </section>
     <footer class="rp-foot">
-      Processing: ${esc(r.settingsText)}. Deconvolution: ${esc(fitLine)}.<br>
+      ${r.acqText ? `Acquisition: ${esc(r.acqText)}.<br>` : ''}${r.qualityText ? `Quality: ${esc(r.qualityText)}<br>` : ''}Processing: ${esc(r.settingsText)}. Deconvolution: ${esc(fitLine)}.<br>
+      Match: the position score of a detected peak in its atlas window (1 at the band centre, about 0.14 at the window edge), a distance measure, not a probability.<br>
       Band assignments from the Raman graphene / graphene-oxide atlas (${esc(lib.source?.url || '')}${lib.source?.commit ? ', commit ' + esc(lib.source.commit.slice(0, 7)) : ''}). Atlas positions assume ${esc(r.refText)}.
       Fitting uses PeakForge's WiRE-compatible pseudo-Voigt and Levenberg–Marquardt fitter. Peak positions shift with excitation, strain, doping, layer number and oxidation: calibrate against a standard.
     </footer>`;

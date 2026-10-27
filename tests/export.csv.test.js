@@ -99,7 +99,7 @@ test('peakTableCSV: column order and values', () => {
   ]);
   const rows = parseCSV(s);
   assertDeepEqual(rows[0], ['label', 'kind', 'tier', 'position_cm-1', 'height', 'fwhm_cm-1', 'prominence',
-    'area', 'confidence', 'delta_cm-1', 'band_id', 'band_name']);
+    'area', 'match_score', 'delta_cm-1', 'band_id', 'band_name']);
   assertDeepEqual(rows[0], [...PEAK_TABLE_COLUMNS]);
   assertDeepEqual(rows[1], ['D', 'band', '1', '1351.23', '812.5', '101.25', '640', '', '0.98765', '1.23457', 'D', D.name]);
   assertDeepEqual(rows[2], ['D′', 'band', '2', '1619.5', '210', '40.1235', '', '12345.7', '0.5', '-0.5', 'Dp', Dp.name]);
@@ -136,21 +136,22 @@ test('fitParamsCSV: missing windows fall back to the window index', () => {
   assertEqual(rows[1][3], '', 'no se');
 });
 
-test('spectrumCSV: x, raw, baseline, corrected, final in that order', () => {
+test('spectrumCSV: x, raw, baseline, corrected, final, despiked in that order', () => {
   const x = Float64Array.from([100, 101.5, 103]);
   const processed = {
     x, raw: Float64Array.from([10, 20.123456789, 30]),
     baseline: Float64Array.from([1, 2, 3]),
     corrected: Float64Array.from([9, 18.123456789, 27]),
     y: Float64Array.from([0.333333333, 0.67, 1]),
+    despiked: Float64Array.from([10, 20.123456789, 30]),
   };
   assertEqual(spectrumCSV(processed),
-    'x,raw,baseline,corrected,final\r\n100,10,1,9,0.333333\r\n101.5,20.1235,2,18.1235,0.67\r\n103,30,3,27,1\r\n');
+    'x,raw,baseline,corrected,final,despiked\r\n100,10,1,9,0.333333,10\r\n101.5,20.1235,2,18.1235,0.67,20.1235\r\n103,30,3,27,1,30\r\n');
 });
 
 test('spectrumCSV: baseline column kept but empty when no baseline was used', () => {
   const processed = { x: [1, 2], raw: [5, 6], baseline: null, corrected: [5, 6], y: [NaN, 1] };
-  assertEqual(spectrumCSV(processed), 'x,raw,baseline,corrected,final\r\n1,5,,5,\r\n2,6,,6,1\r\n');
+  assertEqual(spectrumCSV(processed), 'x,raw,baseline,corrected,final,despiked\r\n1,5,,5,,\r\n2,6,,6,1,\r\n');
 });
 
 test('spectrumCSV: refuses input without x', () => {
