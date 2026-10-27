@@ -10,20 +10,22 @@ import { parseDelimitedText } from './parse-text.js';
 import { detectColumns, tableToSpectra, CONFIDENT } from './detect-columns.js';
 import { parseJcamp } from './parse-jcamp.js';
 import { parseSpc } from './parse-spc.js';
+import { parseWdf } from './parse-wdf.js';
 import { loadSheetJS, parseWorkbook } from './parse-xlsx.js';
 
-export const SUPPORTED_EXTENSIONS = ['.csv', '.tsv', '.txt', '.dat', '.asc', '.xlsx', '.xls', '.jdx', '.dx', '.jcamp', '.spc'];
+export const SUPPORTED_EXTENSIONS = ['.csv', '.tsv', '.txt', '.dat', '.asc', '.xlsx', '.xls', '.jdx', '.dx', '.jcamp', '.spc', '.wdf'];
 
 /**
  * Identify the format from content (and extension as a tie-breaker).
  * @param {Uint8Array} bytes
  * @param {string} ext lower-case extension including the dot
- * @returns {'xlsx'|'xls'|'spc'|'jcamp'|'text'}
+ * @returns {'xlsx'|'xls'|'spc'|'wdf'|'jcamp'|'text'}
  */
 export function sniff(bytes, ext = '') {
   const b = i => bytes[i];
   if (b(0) === 0x50 && b(1) === 0x4B && b(2) === 0x03 && b(3) === 0x04) return 'xlsx';
   if (b(0) === 0xD0 && b(1) === 0xCF && b(2) === 0x11 && b(3) === 0xE0) return 'xls';
+  if (b(0) === 0x57 && b(1) === 0x44 && b(2) === 0x46 && b(3) === 0x31) return 'wdf';   // 'WDF1'
   if (bytes.length >= 512 && (b(1) === 0x4B || b(1) === 0x4C || b(1) === 0x4D)) {
     // SPC headers are full of NUL padding; a text file whose 2nd character is K/L/M is not.
     let nul = 0;
@@ -73,6 +75,7 @@ export async function importFile(file) {
   if (!bytes.length) throw new Error(`${name} is empty.`);
   const kind = sniff(bytes, ext);
   if (kind === 'spc') return parseSpc(buf, { filename: name });
+  if (kind === 'wdf') return parseWdf(buf, { filename: name });
   if (kind === 'xlsx' || kind === 'xls') {
     const XLSX = await loadSheetJS();
     return parseWorkbook(buf, XLSX, { filename: name, format: kind });

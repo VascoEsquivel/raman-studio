@@ -94,7 +94,7 @@
           <div class="dz-inner">
             <div class="dz-beam" aria-hidden="true"><span></span></div>
             <h1 class="dz-title">Drop a Raman spectrum</h1>
-            <p class="dz-sub">Excel, CSV, TSV, TXT, JCAMP-DX or SPC. Whatever your instrument exports.</p>
+            <p class="dz-sub">Excel, CSV, TSV, TXT, JCAMP-DX, SPC or Renishaw WDF (maps too). Whatever your instrument exports.</p>
             <div class="dz-actions">
               <button class="key key-primary" id="dzOpen">Choose file<kbd>O</kbd></button>
               <button class="key" id="dzSampleGO">Sample · graphene oxide</button>
@@ -119,6 +119,7 @@
         <button role="tab" data-tab="read" aria-selected="false">Read</button>
         <button role="tab" data-tab="fit" aria-selected="false">Fit</button>
         <button role="tab" data-tab="band" aria-selected="false">Band</button>
+        <button role="tab" data-tab="map" aria-selected="false" title="Band-intensity maps across the points of a map" hidden>Map</button>
         <button role="tab" data-tab="data" aria-selected="false" title="Acquisition settings, quality checks and spike removal">Data</button>
       </div>
       <div class="deck-body">
@@ -127,6 +128,7 @@
         <section class="pane" data-pane="read" id="paneRead" hidden></section>
         <section class="pane" data-pane="fit" id="paneFit" hidden></section>
         <section class="pane" data-pane="band" id="paneBand" hidden></section>
+        <section class="pane" data-pane="map" id="paneMap" hidden></section>
         <section class="pane" data-pane="data" id="paneData" hidden></section>
       </div>
     </aside>
@@ -144,7 +146,7 @@
 <!-- printable report (hidden on screen) -->
 <article class="report" id="report" aria-hidden="true"></article>
 
-<input type="file" id="fileInput" accept=".csv,.tsv,.txt,.dat,.asc,.xlsx,.xls,.jdx,.dx,.jcamp,.spc" multiple hidden>
+<input type="file" id="fileInput" accept=".csv,.tsv,.txt,.dat,.asc,.xlsx,.xls,.jdx,.dx,.jcamp,.spc,.wdf" multiple hidden>
 <input type="file" id="projectInput" accept=".json" hidden>
 <noscript><p style="padding:2rem;font:16px system-ui">Raman Studio needs JavaScript.</p></noscript>
 <script type="module" src="js/main.js"></script>

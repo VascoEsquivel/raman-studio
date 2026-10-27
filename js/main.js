@@ -13,8 +13,9 @@ import { peakY } from './fit/profile.js';
 import { computeRatios } from './analysis/ratios.js';
 import { evaluateWorkflow } from './analysis/workflow.js';
 import { acquisition, qualityFlags } from './analysis/acquisition.js';
+import { mapValues, correlation, layout } from './analysis/map.js';
 import { synthFromLibrary, synthMonolayer } from './sample/synth.js';
-import { peakTableCSV, fitParamsCSV, spectrumCSV } from './export/csv.js';
+import { peakTableCSV, fitParamsCSV, spectrumCSV, toCSV } from './export/csv.js';
 import { buildFigureSVG, svgToPng } from './export/image.js';
 import { fillReport } from './export/report.js';
 import { Plot } from './render/plot.js';
@@ -40,6 +41,7 @@ const S = {
   processed: null, procCache: new Map(),
   autoPeaks: [], manual: [], hidden: [], overrides: {},
   spikeEdits: { keep: [], zaps: [] },   // per active spectrum: despike keeps (cm⁻¹) and hand zaps ([lo, hi])
+  map: { num: 'G', den: '', cmp: '', numLo: null, numHi: null, cmpLo: null, cmpHi: null },   // Map tab measures
   peaks: [], assignments: [], items: [],
   deconv: null, ratios: [], workflow: null, noiseSigma: 0,
   display: 'processed', showComponents: true, labelAllFit: false,
@@ -112,13 +114,14 @@ function pipelineFor(sp, edits = null) {
  * the processed spectrum or the band windows change, because its seeds and
  * bounds depend on both.
  */
-function recompute(level = 'process', { reveal = false } = {}) {
+function recompute(level = 'process', { reveal = false, keepCache = false } = {}) {
   const sp = active();
   try {
     if (level === 'process' || level === 'match') prepare();
     if (sp && level === 'process') {
       S.processed = pipelineFor(sp, S.spikeEdits);
-      S.procCache.clear();
+      // switching spectrum changes no setting: the other spectra's results stay valid
+      if (keepCache) S.procCache.delete(sp.id); else S.procCache.clear();
       S.noiseSigma = estimateNoise(S.processed.y);
       S.deconv = null;
     }
@@ -360,6 +363,7 @@ function viewModel() {
     showComponents: S.showComponents, labelAllFit: S.labelAllFit,
     fitBounds: lib ? `bounded to ${lib.fitDefaults?.fwhmMin ?? '—'}–${lib.fitDefaults?.fwhmMax ?? '—'} cm⁻¹` : '',
     data: dataModel(),
+    map: S.tab === 'map' ? mapModel() : null,
   };
 }
 
@@ -374,6 +378,45 @@ function dataModel() {
     despikeOn: !!(P.steps && P.steps.despike), despike: S.settings.despike, info: P.despikeInfo,
     spikes: P.spikes || [], suspects: P.suspects || [], restored: P.restored || [], edits: S.spikeEdits,
     setSize: companionsFor(sp).length,
+  };
+}
+
+/** The spectra of the active spectrum's map (same file and sheet, with stage coordinates), in map order. */
+function mapSet(sp) {
+  if (!sp || !sp.meta || !sp.meta.map || !sp.source) return [];
+  return S.spectra.filter(o => o.meta && o.meta.map && o.source && o.source.file === sp.source.file && o.source.sheet === sp.source.sheet)
+    .sort((a, b) => a.meta.map.index - b.meta.map.index);
+}
+
+/** What the Map pane draws: band (or ratio) heights per map point on the despiked spectra. */
+function mapModel() {
+  const sp = active(), set = mapSet(sp);
+  if (set.length < 2) return { available: false };
+  const bands = S.prepared ? S.prepared.bands.map(b => ({ id: b.id, label: b.label, window: b.window })) : [];
+  const m = S.map;
+  if (m.num !== 'range' && !bands.some(b => b.id === m.num) && bands.length) m.num = (bands.find(b => b.id === 'G') || bands[0]).id;
+  const win = (sel, lo, hi) => {
+    if (sel === 'range') return Number.isFinite(lo) && Number.isFinite(hi) && lo !== hi ? { lo, hi } : null;
+    const b = bands.find(q => q.id === sel);
+    return b ? { lo: b.window[0], hi: b.window[1] } : null;
+  };
+  const name = (sel, lo, hi) => (sel === 'range' ? `${fmtX(Math.min(lo, hi))}–${fmtX(Math.max(lo, hi))} cm⁻¹` : (bands.find(b => b.id === sel) || {}).label || sel);
+  const data = set.map(o => { const q = processedFor(o); return q ? { x: q.x, y: q.despiked } : { x: o.x, y: o.y }; });
+  const nw = win(m.num, m.numLo, m.numHi), dw = m.den ? win(m.den) : null;
+  const values = nw ? mapValues(data, nw, dw) : new Float64Array(set.length).fill(NaN);
+  const label = nw ? name(m.num, m.numLo, m.numHi) + (dw ? ' / ' + name(m.den) : '') : 'choose a band';
+  let cmp = null;
+  const cw = m.cmp ? win(m.cmp, m.cmpLo, m.cmpHi) : null;
+  if (cw && nw) {
+    const cv = mapValues(data, cw);
+    cmp = { values: cv, label: name(m.cmp, m.cmpLo, m.cmpHi), ...correlation(values, cv) };
+  }
+  const points = set.map(o => ({ id: o.id, index: o.meta.map.index, x: o.meta.map.x, y: o.meta.map.y }));
+  return {
+    available: true, lay: layout(points), points, values, cmp, label, unit: set[0].meta.map.unit || '',
+    dark: document.documentElement.dataset.theme !== 'light', activeId: sp.id, bands, sel: m, den: !!dw,
+    ranges: { num: { show: m.num === 'range', lo: m.numLo, hi: m.numHi }, cmp: { show: m.cmp === 'range', lo: m.cmpLo, hi: m.cmpHi } },
+    setDespike: S.settings.despike.on && S.settings.despike.useSet && set.length >= 5,
   };
 }
 
@@ -420,18 +463,20 @@ function renderAll() {
 }
 
 function renderDeck() {
+  if (S.tab === 'map' && mapSet(active()).length < 2) S.tab = 'peaks';
   const vm = viewModel();
   for (const t of $$('.deck-tabs [data-tab]')) {
     t.setAttribute('aria-selected', String(t.dataset.tab === S.tab));
     if (t.dataset.tab === 'peaks') t.innerHTML = `Peaks${S.peaks.length ? `<span class="badge">${S.peaks.length}</span>` : ''}`;
+    if (t.dataset.tab === 'map') t.hidden = mapSet(active()).length < 2;
     if (t.dataset.tab === 'data') {
       const d = vm.data, warn = d ? d.flags.filter(f => f.level === 'warn').length + d.suspects.length : 0;
       t.innerHTML = `Data${warn ? `<span class="badge warn" title="quality warnings and features to check">${warn}</span>` : ''}`;
     }
   }
   for (const p of $$('.pane')) p.hidden = p.dataset.pane !== S.tab;
-  const target = { peaks: '#panePeaks', ratios: '#paneRatios', read: '#paneRead', fit: '#paneFit', band: '#paneBand', data: '#paneData' }[S.tab];
-  const fn = { peaks: panes.renderPeaks, ratios: panes.renderRatios, read: panes.renderRead, fit: panes.renderFit, band: panes.renderBand, data: panes.renderData }[S.tab];
+  const target = { peaks: '#panePeaks', ratios: '#paneRatios', read: '#paneRead', fit: '#paneFit', band: '#paneBand', data: '#paneData', map: '#paneMap' }[S.tab];
+  const fn = { peaks: panes.renderPeaks, ratios: panes.renderRatios, read: panes.renderRead, fit: panes.renderFit, band: panes.renderBand, data: panes.renderData, map: panes.renderMap }[S.tab];
   try { fn($(target), vm); } catch (err) { $(target).innerHTML = `<div class="empty">Could not render this panel: ${esc(err.message)}</div>`; }
 }
 
@@ -603,7 +648,7 @@ function setActive(id, { reveal = true, resetView = true } = {}) {
     const near = [532, 633, 785].find(nm => Math.abs(nm - sp.meta.laserNm) < 6);
     if (near && near !== S.laserNm) { setLaser(near, { silent: true }); toast(`Laser set to ${near} nm from the file header`); }
   }
-  recompute('process', { reveal });
+  recompute('process', { reveal, keepCache: true });
   if (resetView) { plot.resetView(); minimap.setView(plot.view); }
 }
 
@@ -642,6 +687,7 @@ function setTheme(t) {
   store.set('rs.theme', t);
   plot && plot.requestRender();
   minimap && minimap.render();
+  if (S.tab === 'map' && S.processed) renderDeck();   // the colour ramp flips with the theme
 }
 async function togglePresent(force) {
   const root = document.documentElement;
@@ -694,6 +740,13 @@ async function doExport(kind) {
   } catch (err) {
     toast('Export failed: ' + err.message, { warn: true, ms: 5000 });
   } finally { busy(false); }
+}
+function exportMapCSV() {
+  const mm = mapModel();
+  if (!mm.available) return;
+  const head = ['point', `x_${mm.unit || 'um'}`, `y_${mm.unit || 'um'}`, mm.label].concat(mm.cmp ? [mm.cmp.label] : []);
+  const rows = mm.points.map((p, k) => [p.index + 1, p.x, p.y, mm.values[k]].concat(mm.cmp ? [mm.cmp.values[k]] : []));
+  download(new Blob([toCSV(head, rows)], { type: 'text/csv' }), safeName(active().source.file || 'map') + '_map.csv');
 }
 function csvRows() {
   return S.items.map(it => ({
@@ -901,7 +954,16 @@ function wire() {
   for (const b of $$('[data-stack]')) b.onclick = () => { S.stack = b.dataset.stack; renderAll(); };
 
   // deck
-  for (const t of $$('.deck-tabs [data-tab]')) t.onclick = () => { S.tab = t.dataset.tab; renderDeck(); };
+  for (const t of $$('.deck-tabs [data-tab]')) t.onclick = async () => {
+    S.tab = t.dataset.tab;
+    if (S.tab === 'map') {
+      // the first map needs every spectrum of it processed (despiked): show that it is working
+      const todo = mapSet(active()).filter(o => o.id !== S.activeId && !S.procCache.has(o.id));
+      if (todo.length > 8) { busy(true, `Processing ${todo.length + 1} map spectra…`); await nextFrame(); }
+      try { for (const o of todo) processedFor(o); } finally { busy(false); }
+    }
+    renderDeck();
+  };
   $('#deck').addEventListener('click', e => {
     const sk = e.target.closest('[data-spike]');
     if (sk) { e.stopPropagation(); spikeAction(sk.dataset.spike, sk.dataset); return; }
@@ -913,8 +975,15 @@ function wire() {
       if (re.dataset.band) S.overrides[re.dataset.reassign] = re.dataset.band; else delete S.overrides[re.dataset.reassign];
       recompute('peaks'); return;
     }
+    const cell = e.target.closest('[data-mapcell]');
+    if (cell) { if (cell.dataset.mapcell !== S.activeId) setActive(cell.dataset.mapcell, { reveal: false, resetView: false }); return; }
     const act = e.target.closest('[data-action]');
-    if (act) { if (act.dataset.action === 'deconvolve') runDeconvolution(); if (act.dataset.action === 'clearfit') { S.deconv = null; analyse(); renderAll(); } return; }
+    if (act) {
+      if (act.dataset.action === 'deconvolve') runDeconvolution();
+      if (act.dataset.action === 'clearfit') { S.deconv = null; analyse(); renderAll(); }
+      if (act.dataset.action === 'mapcsv') exportMapCSV();
+      return;
+    }
     const sel = e.target.closest('[data-select]');
     if (sel && !e.target.closest('a')) {
       const id = sel.dataset.select;
@@ -930,8 +999,26 @@ function wire() {
   });
   $('#deck').addEventListener('dblclick', e => { const sel = e.target.closest('[data-select]'); if (sel) select(sel.dataset.select, { openBand: true }); });
   $('#deck').addEventListener('change', e => {
+    const ms = e.target.closest('[data-mapsel]');
+    if (ms) {
+      const key = ms.dataset.mapsel;
+      S.map[key] = ms.value;
+      // a new custom range starts from the part of the spectrum on screen
+      if (ms.value === 'range' && !Number.isFinite(S.map[key + 'Lo']) && plot.view) { S.map[key + 'Lo'] = +plot.view.x0.toFixed(1); S.map[key + 'Hi'] = +plot.view.x1.toFixed(1); }
+      renderDeck(); return;
+    }
+    const mr = e.target.closest('[data-maprange]');
+    if (mr) {
+      const key = mr.dataset.maprange.replace(/lo$/, 'Lo').replace(/hi$/, 'Hi');
+      S.map[key] = parseFloat(mr.value);
+      renderDeck(); return;
+    }
     const o = e.target.closest('[data-opt]'); if (!o) return;
     S[o.dataset.opt] = o.checked; renderAll();
+  });
+  $('#deck').addEventListener('pointerover', e => {
+    const c = e.target.closest('[data-tip]'), ro = $('#mapReadout');
+    if (c && ro) ro.textContent = c.dataset.tip;
   });
 
   // drag & drop anywhere

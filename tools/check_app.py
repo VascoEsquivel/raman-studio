@@ -243,9 +243,43 @@ def main() -> int:
             st = page.evaluate("document.querySelector('#paneRead .step')?.className || ''")
             c.check("match" in st, f"monolayer: atlas step 1 matches (class {st!r})")
 
+            # ---------------- Renishaw map: band-intensity maps
+            print("map: map_small.wdf")
+            page.goto(base)
+            page.wait_for_selector("#dropzone:not([hidden])")
+            page.set_input_files("#fileInput", str(FIX / "map_small.wdf"))
+            page.wait_for_function("document.querySelector('#dropzone').hidden", timeout=15000)
+            c.settle(1500)
+            c.check(page.is_visible(".deck-tabs [data-tab=map]"), "map file: the Map tab is offered")
+            page.click(".deck-tabs [data-tab=map]")
+            page.wait_for_selector("#paneMap .mcell", timeout=20000)
+            c.settle(400)
+            c.shot("13_map")
+            cells = page.query_selector_all("#paneMap .mcell")
+            c.check(len(cells) == 6, f"map pane: one cell per map point (got {len(cells)})")
+            painted = page.evaluate("[...document.querySelectorAll('#paneMap .mcell')].filter(e => e.getAttribute('fill')).length")
+            c.check(painted == 6, f"map pane: every cell has a colour (got {painted})")
+            target = page.evaluate("document.querySelectorAll('#paneMap .mcell')[4].dataset.mapcell")
+            page.click(f"#paneMap .mcell[data-mapcell='{target}']", force=True); c.settle(800)
+            on = page.evaluate("document.querySelector('#paneMap .mcell.on')?.dataset.mapcell")
+            c.check(on == target, f"clicking a map cell opens that spectrum ({on!r} vs {target!r})")
+            page.select_option("#paneMap [data-mapsel=cmp]", "D"); c.settle(500)
+            corr = page.inner_text("#paneMap .mcorr") if page.query_selector("#paneMap .mcorr") else ""
+            c.check("r = 1.000" in corr or "r = 0.99" in corr, f"compare G with D: the two maps rise together ({corr!r})")
+            c.check(len(page.query_selector_all("#paneMap .mdot")) == 6, "compare: a scatter dot per map point")
+            page.select_option("#paneMap [data-mapsel=cmp]", "twoD"); c.settle(500)
+            corr = page.inner_text("#paneMap .mcorr") if page.query_selector("#paneMap .mcorr") else ""
+            c.check("r = -1.000" in corr or "r = -0.99" in corr, f"compare G with 2D: opposite directions ({corr!r})")
+            c.shot("14_map_compare")
+            c.assert_layout("map")
+            with page.expect_download() as dl:
+                page.click("#paneMap [data-action=mapcsv]")
+            rows = Path(dl.value.path()).read_text(encoding="utf-8").strip().splitlines()
+            c.check(len(rows) == 7 and rows[0].startswith("point,"), f"map CSV: header and one row per point (got {len(rows)} lines)")
+
             # ---------------- fixtures
             fixtures = sorted(f for f in FIX.iterdir() if f.suffix.lower() in
-                              (".csv", ".tsv", ".txt", ".xlsx", ".xls", ".jdx", ".dx", ".spc") and f.name != "find_peaks_vectors.json")
+                              (".csv", ".tsv", ".txt", ".xlsx", ".xls", ".jdx", ".dx", ".spc", ".wdf") and f.name != "find_peaks_vectors.json")
             for f in fixtures:
                 print("fixture:", f.name)
                 page.goto(base)

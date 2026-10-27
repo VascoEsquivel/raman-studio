@@ -52,6 +52,8 @@ export function acquisition(meta) {
   add('Slit', pickKey(h, /slit/i));
   const sw = pickKey(h, /^version$|software/i);
   add('Software version', sw);
+  add('Measurement', pickKey(h, /^measurement$/i));
+  add('Map', pickKey(h, /^map$/i));
   return out;
 }
 

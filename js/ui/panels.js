@@ -4,6 +4,7 @@
 
 import { esc, fmt, fmtX, fmtSigned, richText, plainText } from './dom.js';
 import { peakType } from '../fit/profile.js';
+import { RAMP, rampColor } from '../analysis/map.js';
 
 const STATUS_GLYPH = { match: '✓', partial: '◐', no: '✕', info: 'i', insufficient: '…' };
 /** The matcher's confidence is a position score, never shown as a percentage (it is not a probability). */
@@ -290,4 +291,73 @@ export function renderData(el, vm) {
     <div class="fitwin"><h4><span>Acquisition</span><span>${d.points} pts · ${fmt(d.x0, 4)}–${fmt(d.x1, 4)} cm⁻¹</span></h4>${acq}</div>
     <div class="fitwin"><h4><span>Quality checks</span><span>${d.flags.filter(f => f.level === 'warn').length || '✓'}</span></h4>${flags}</div>
     <div class="fitwin"><h4><span>Cosmic-ray removal</span><span>${d.despikeOn ? `${d.spikes.length} removed` : 'off'}</span></h4>${spikes}</div>`;
+}
+
+// ------------------------------------------------------------------ map
+/** Option list for a measure select: the library's bands, plus a custom range. */
+function measureOptions(vm, value, { none = false } = {}) {
+  const opts = (vm.map.bands || []).map(b => `<option value="${esc(b.id)}"${b.id === value ? ' selected' : ''}>${esc(b.label)} · ${fmt(b.window[0], 4)}–${fmt(b.window[1], 4)} cm⁻¹</option>`);
+  if (none) opts.unshift(`<option value=""${!value ? ' selected' : ''}>—</option>`);
+  else opts.push(`<option value="range"${value === 'range' ? ' selected' : ''}>custom range…</option>`);
+  return opts.join('');
+}
+
+export function renderMap(el, vm) {
+  const m = vm.map;
+  if (!m || !m.available) { el.innerHTML = '<div class="empty">Load a Renishaw map (.wdf) to see band-intensity maps.</div>'; return; }
+  const { lay, values, cmp } = m;
+  const fin = Array.from(values).filter(Number.isFinite);
+  const lo = fin.length ? Math.min(...fin) : 0, hi = fin.length ? Math.max(...fin) : 1;
+  const t = v => (hi > lo ? (v - lo) / (hi - lo) : 0.5);
+  // heatmap geometry: square cells in stage units, at most 300 px tall
+  const W = 320, ratio = (lay.dy || 1) / (lay.dx || 1);
+  const cw = Math.max(4, Math.min(W / lay.nx, 300 / (lay.ny * ratio)));
+  const ch = cw * ratio;
+  const w = cw * lay.nx, h = ch * lay.ny, gap = cw > 10 ? 1.5 : 0.5;
+  const cells = m.points.map((p, k) => {
+    const [ix, iy] = lay.cell[k], v = values[k];
+    const fill = rampColor(t(v), m.dark);
+    const title = `#${p.index + 1} (${fmt(p.x, 4)}, ${fmt(p.y, 4)} ${esc(m.unit)}): ${Number.isFinite(v) ? fmt(v, 4) : 'n/a'}`;
+    return `<rect class="mcell${p.id === m.activeId ? ' on' : ''}${fill ? '' : ' na'}" data-mapcell="${esc(p.id)}" data-tip="${title}" x="${(ix * cw + gap / 2).toFixed(2)}" y="${(iy * ch + gap / 2).toFixed(2)}" width="${(cw - gap).toFixed(2)}" height="${(ch - gap).toFixed(2)}" rx="${cw > 12 ? 2 : 0}"${fill ? ` fill="${fill}"` : ''}><title>${title}</title></rect>`;
+  }).join('');
+  const grad = (m.dark ? [...RAMP].reverse() : RAMP).join(', ');
+  const heat = `<svg class="mapsvg" viewBox="-2 -2 ${(w + 4).toFixed(1)} ${(h + 4).toFixed(1)}" width="${(w + 4).toFixed(0)}" height="${(h + 4).toFixed(0)}" role="img" aria-label="${esc(m.label)} map, ${lay.nx} by ${lay.ny} points">${cells}</svg>
+    <div class="maxes"><span>x ${fmt(lay.xs[0], 4)} → ${fmt(lay.xs[lay.xs.length - 1], 4)} ${esc(m.unit)}</span><span>y ${fmt(lay.ys[0], 4)} (top) → ${fmt(lay.ys[lay.ys.length - 1], 4)} ${esc(m.unit)}</span></div>
+    <div class="mlegend"><span class="mv">${fmt(lo, 4)}</span><span class="mbar" style="background:linear-gradient(90deg, ${grad})"></span><span class="mv">${fmt(hi, 4)}</span></div>
+    <div class="mreadout" id="mapReadout">${esc(m.label)} · hover a point for its value, click it to open that spectrum</div>`;
+
+  const rangeInputs = (key, r) => `<span class="mrange"${r.show ? '' : ' hidden'}><input data-maprange="${key}lo" type="number" step="any" value="${r.lo ?? ''}" aria-label="from (cm⁻¹)"> – <input data-maprange="${key}hi" type="number" step="any" value="${r.hi ?? ''}" aria-label="to (cm⁻¹)"> cm⁻¹</span>`;
+  const controls = `<div class="mctl">
+      <label>Map <select data-mapsel="num">${measureOptions(vm, m.sel.num)}</select></label>${rangeInputs('num', m.ranges.num)}
+      <label>÷ <select data-mapsel="den">${measureOptions(vm, m.sel.den, { none: true })}</select></label>
+    </div>`;
+
+  let compare = '';
+  if (cmp) {
+    const { values: cv, r, n, label: clabel } = cmp;
+    const pts = m.points.map((p, k) => [values[k], cv[k], p]).filter(q => Number.isFinite(q[0]) && Number.isFinite(q[1]));
+    const sw = 300, sh = 170, pad = 30;
+    const xs = pts.map(q => q[1]), ys = pts.map(q => q[0]);
+    const [x0, x1] = xs.length ? [Math.min(...xs), Math.max(...xs)] : [0, 1], [y0, y1] = ys.length ? [Math.min(...ys), Math.max(...ys)] : [0, 1];
+    const sx = v => pad + (sw - pad - 8) * (x1 > x0 ? (v - x0) / (x1 - x0) : 0.5), sy = v => sh - pad + 8 - (sh - pad - 14) * (y1 > y0 ? (v - y0) / (y1 - y0) : 0.5);
+    const dots = pts.map(([a, b, p]) => `<circle class="mdot${p.id === m.activeId ? ' on' : ''}" data-mapcell="${esc(p.id)}" data-tip="#${p.index + 1}: ${esc(clabel)} ${fmt(b, 4)}, ${esc(m.label)} ${fmt(a, 4)}" cx="${sx(b).toFixed(1)}" cy="${sy(a).toFixed(1)}" r="4.5"><title>#${p.index + 1}</title></circle>`).join('');
+    const word = !Number.isFinite(r) ? 'not enough points to compare' : Math.abs(r) >= 0.8 ? (r > 0 ? 'rise and fall together' : 'move in opposite directions') : Math.abs(r) >= 0.5 ? 'partly co-vary' : 'vary independently';
+    compare = `<div class="ssub">Compare</div>
+      <div class="mctl"><label>with <select data-mapsel="cmp">${measureOptions(vm, m.sel.cmp, { none: true })}</select></label>${rangeInputs('cmp', m.ranges.cmp)}</div>
+      <div class="mcorr"><b class="mono">r = ${Number.isFinite(r) ? r.toFixed(3) : '—'}</b> over ${n} points: the two maps ${word}.</div>
+      <svg class="mscatter" viewBox="0 0 ${sw} ${sh}" width="${sw}" height="${sh}" role="img" aria-label="${esc(m.label)} against ${esc(clabel)}">
+        <line class="max" x1="${pad}" y1="${sh - pad + 8}" x2="${sw - 8}" y2="${sh - pad + 8}"/><line class="max" x1="${pad}" y1="18" x2="${pad}" y2="${sh - pad + 8}"/>
+        <text class="mlab" x="${sw - 8}" y="${sh - 6}" text-anchor="end">${esc(clabel)} →</text>
+        <text class="mlab" x="${pad - 4}" y="10">${esc(m.label)} ↑</text>${dots}</svg>
+      <p class="dnote">Pearson correlation across the map points. Bands of one component rise and fall together, so a high r supports a common origin, but does not prove it: thickness, focus and fluorescence move every band at once.</p>`;
+  } else {
+    compare = `<div class="ssub">Compare</div><div class="mctl"><label>with <select data-mapsel="cmp">${measureOptions(vm, '', { none: true })}</select></label></div>`;
+  }
+
+  el.innerHTML = `<div class="pane-head"><h2 class="pane-title">Map</h2><span class="pane-meta">${lay.nx} × ${lay.ny} points · ${fmt(lay.dx, 3)} × ${fmt(lay.dy, 3)} ${esc(m.unit)}</span></div>
+    ${controls}
+    <div class="fitwin mapbox">${heat}</div>
+    ${compare}
+    <div style="display:flex;gap:8px;margin-top:10px"><button class="btn" data-action="mapcsv">Map values (CSV)</button></div>
+    <p class="source-note">Heights above a straight line joining the window edges (WiRE's “signal to baseline”), measured on the despiked spectra${m.setDespike ? ', with cosmic rays judged against the rest of the map' : ''}. ${m.den ? 'Ratio cells are empty where the denominator band is under 5 % of its largest height in this map (absent: the ratio would divide by noise).' : ''}</p>`;
 }

@@ -1,7 +1,7 @@
 # Raman Studio
 
-Drop in a Raman spectrum (Excel, CSV, TXT, JCAMP-DX or SPC, whatever the instrument
-exports) and see it immediately, cleaned up, with every peak labelled from the
+Drop in a Raman spectrum (Excel, CSV, TXT, JCAMP-DX, SPC or Renishaw WDF, whatever the
+instrument exports) and see it immediately, cleaned up, with every peak labelled from the
 [Raman graphene / graphene-oxide atlas](https://vascoesquivel.github.io/raman-graphene-atlas/).
 Click a label to read what the band means, get the atlas intensity ratios from your own
 numbers, and resolve the shoulders hidden inside broad GO bands with a nine-band fit.
@@ -62,6 +62,11 @@ app is static files on GitHub Pages: no server, no account, no build step.
    - **Ratios** computes the atlas ratio guide (height and area versions), with
      the Cançado crystallite size and Eckmann defect class.
    - **Read** walks the atlas's "read your own spectrum" steps using your numbers.
+   - **Map** appears for a Renishaw map (`.wdf`). It draws a band-intensity heat
+     map: one band's height, or the ratio of two, at every map point. Click a
+     point to open its spectrum. *Compare* adds a second band and gives the
+     correlation of the two maps across the points, with a scatter plot, which
+     replaces toggling two heat maps by eye.
    - **Data** shows the acquisition settings read from the file header (laser,
      grating, exposure, accumulations, whether the instrument's own cosmic-ray
      removal was on, laser power), quality warnings (saturated or clipped data),
@@ -71,6 +76,8 @@ app is static files on GitHub Pages: no server, no account, no build step.
    - CSV files of the peak table (with each peak's `match_score`), the fit
      parameters and the processed spectrum (raw, baseline, corrected, final and
      `despiked` columns).
+   - The map values as CSV: point, stage x and y, the mapped value and the
+     compared band.
    - A one-page printable report: figure, tables, ratios and interpretation.
    - A project JSON (<kbd>Ctrl</kbd>+<kbd>S</kbd>) that reopens exactly where you
      left off.
@@ -109,6 +116,7 @@ Keys follow PeakForge where the action exists there.
 | `.xlsx` `.xls` | Every sheet with numeric data. Read with SheetJS 0.20.3, loaded from its CDN only when a spreadsheet is opened. |
 | `.jdx` `.dx` | JCAMP-DX 4.24 / 5: `XYDATA` with AFFN or ASDF compression (SQZ, DIF, DUP), `XYPOINTS`, `PEAK TABLE`, multi-block files. |
 | `.spc` | Thermo / Galactic SPC, new format. Even and XY spacing, single and multiple subfiles. Experimental. |
+| `.wdf` | Renishaw WiRE native files: single spectra, series and maps, with stage coordinates and the map grid. Laser, accumulations, WiRE version and map size are shown on the Data tab; the operator name is not read. Spectral images (several rows per spectrum, as in line-focus maps) are not supported. Up to 20 000 spectra per file. |
 
 The wavenumber column is detected automatically: monotonic, roughly 50–4000 cm⁻¹,
 evenly spaced, and helped by header names. An index column never wins.
@@ -151,7 +159,7 @@ python tools/serve.py          # http://127.0.0.1:8765/raman-studio/
 
 Tests run in a real browser. `tests/index.html` runs the unit suites (parsers,
 cosmic-ray filter, baselines, SciPy-checked peak detection, the fitter, atlas
-matching, ratios, workflow and label layout) using synthetic spectra and one small
+matching, ratios, workflow, band maps and label layout) using synthetic spectra and one small
 fixture per format. To run everything headless:
 
 ```
@@ -204,8 +212,25 @@ Module contracts are in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 - **Most formats are tested against synthetic fixtures.** WiRE SPC exports have
   also been checked against real instrument files (values and header); the
   other fixtures are modelled on WiRE, LabSpec, Excel and JCAMP-DX exports. SPC
-  support covers the new format only. Renishaw WDF files (and so WiRE maps) are
-  not read yet. Wavelength (nm) x-axes are not converted to Raman shift.
+  support covers the new format only. The WDF reader matches an independent
+  reader value for value on twelve real WiRE 5.6 files (point spectra and an
+  88-point map); other WiRE versions have not been checked. Wavelength (nm)
+  x-axes are not converted to Raman shift.
+- **WiRE's SPC export is not the same data as the WDF it came from.** For one
+  point spectrum saved both ways, the SPC was resampled onto an even 2.50 cm⁻¹
+  grid (the WDF's own axis spacing runs from 2.08 to 3.01 cm⁻¹) and its
+  intensities were 70–170 counts higher (median 148). Band positions agreed
+  within 0.2 cm⁻¹ at D and G. The cause of the offset is not known. When both
+  exist, open the WDF, and compare absolute intensities only between files of
+  the same kind.
+- **Band maps are simple heights.** A map cell is the band's height above a
+  straight line across its window (WiRE's "signal to baseline"), not a fitted
+  area, so overlapping bands (D′ under G) add into each other. A ratio cell is
+  left empty where the denominator band is below 5% of its largest height in
+  the map. Correlation measures co-variation across points, not a common
+  origin: thickness, focus and fluorescence move every band together. The
+  first opening of the Map tab processes every spectrum of the map, which
+  takes a moment on large maps.
 - **Cosmic-ray removal rests on one assumption: the narrowest real band.** By
   default a real band is at least 3 data points wide (FWHM). A real line
   narrower than that, such as a silicon peak on a coarse grid, looks like a
